@@ -19,6 +19,10 @@ for p in "$HOME/.local/bin" "/usr/local/bin" "$HOME/bin"; do
     [[ -d "$p" ]] && [[ ":$PATH:" != *":$p:"* ]] && export PATH="$p:$PATH"
 done
 
+# Clear proxy vars that may be injected by IDE/editor shells — they break
+# AWS CLI and other tools that need direct internet access.
+unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy NO_PROXY no_proxy 2>/dev/null || true
+
 # ─── Colors ──────────────────────────────────────────────────────────────────
 
 if [[ -t 1 ]]; then
@@ -471,19 +475,23 @@ validate() {
             required_total=$((required_total + 1))
         fi
 
-        if eval "$command" &>/dev/null; then
+        local cmd_output cmd_rc
+        cmd_output=$(eval "$command" 2>&1) && cmd_rc=0 || cmd_rc=$?
+
+        if (( cmd_rc == 0 )); then
             pass "${name}"
             if [[ "$required_flag" == "true" ]]; then
                 required_passed=$((required_passed + 1))
             fi
         else
             if [[ "$required_flag" == "true" ]]; then
-                fail "${name}"
+                fail "${name} (exit $cmd_rc)"
             else
                 warn_msg "${name}"
                 warnings=$((warnings + 1))
             fi
             [[ -n "$fail_message" ]] && echo "      ${fail_message}"
+            [[ -n "$cmd_output" ]] && echo "      Output: ${cmd_output:0:200}"
         fi
     done
 
