@@ -16,6 +16,11 @@ addtional-notes.md
 .env
 .env.*
 
+# AgnosticD runtime state (tokens, manifests) and generated config
+agnosticd/.state/*
+!agnosticd/.state/.gitkeep
+agnosticd/config.yml
+
 # Generated install assets
 generated_assets/
 **/auth/

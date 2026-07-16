@@ -1,0 +1,341 @@
+# onboard.yml — Onboarding manifest for LINBIT Edge Storage Workshop
+# Spec version 1.0
+#
+# Run with an AI agent (Cursor / Claude Code) or: ./bootstrap.sh
+
+name: linbit-edge-storage-workshop
+description: >-
+  LINBIT SDS on OpenShift — Hub + Student cluster workshop using AgnosticD,
+  RHACM, Showroom, and Field-Sourced Content Helm charts.
+deploy_script: agnosticd/deploy.sh
+
+# ─────────────────────────────────────────────────────────────
+# Prerequisites
+# ─────────────────────────────────────────────────────────────
+
+prerequisites:
+  - name: python3
+    check_command: "python3 --version"
+    version_regex: "Python (\\d+\\.\\d+)"
+    min_version: "3.12"
+    install:
+      macos: "brew install python@3.12"
+      rhel9: "sudo dnf install -y python3.12"
+      rhel10: "sudo dnf install -y python3.12"
+      fedora: "sudo dnf install -y python3.12"
+      debian: "sudo apt-get install -y python3"
+      fallback: "Install Python 3.12+ from https://python.org"
+
+  - name: podman
+    check_command: "podman --version"
+    version_regex: "podman version (\\d+\\.\\d+)"
+    min_version: "5.0"
+    install:
+      macos: "brew install podman"
+      rhel9: "sudo dnf install -y podman"
+      rhel10: "sudo dnf install -y podman"
+      fedora: "sudo dnf install -y podman"
+      debian: "sudo apt-get install -y podman"
+      fallback: "Install Podman 5+ from https://podman.io"
+
+  - name: awscli
+    check_command: "aws --version"
+    version_regex: "aws-cli/(\\d+\\.\\d+)"
+    install:
+      macos: "brew install awscli"
+      rhel9: "sudo dnf install -y awscli2"
+      rhel10: "sudo dnf install -y awscli2"
+      fedora: "sudo dnf install -y awscli2"
+      debian: "sudo apt-get install -y awscli"
+      fallback: "Install AWS CLI from https://aws.amazon.com/cli/"
+
+  - name: oc
+    check_command: "oc version --client"
+    version_regex: "Client Version: (\\d+\\.\\d+)"
+    install:
+      rhel9: "sudo dnf install -y openshift-clients"
+      rhel10: "sudo dnf install -y openshift-clients"
+      fedora: "sudo dnf install -y openshift-clients"
+      macos: "brew install openshift-cli"
+      fallback: "Download oc from https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/"
+
+  - name: git
+    check_command: "git --version"
+    install:
+      macos: "brew install git"
+      rhel9: "sudo dnf install -y git"
+      rhel10: "sudo dnf install -y git"
+      fedora: "sudo dnf install -y git"
+      debian: "sudo apt-get install -y git"
+      fallback: "Install git from https://git-scm.com"
+
+  - name: jq
+    check_command: "jq --version"
+    install:
+      macos: "brew install jq"
+      rhel9: "sudo dnf install -y jq"
+      rhel10: "sudo dnf install -y jq"
+      fedora: "sudo dnf install -y jq"
+      debian: "sudo apt-get install -y jq"
+      fallback: "Install jq from https://jqlang.github.io/jq/"
+
+  - name: sshpass
+    check_command: "command -v sshpass"
+    install:
+      macos: "brew install esolitos/ipa/sshpass"
+      rhel9: "sudo dnf install -y sshpass"
+      rhel10: "sudo dnf install -y sshpass"
+      fedora: "sudo dnf install -y sshpass"
+      debian: "sudo apt-get install -y sshpass"
+      fallback: "Install sshpass from your package manager"
+
+# ─────────────────────────────────────────────────────────────
+# Setup Steps
+# ─────────────────────────────────────────────────────────────
+
+setup_steps:
+  - name: "Clone AgnosticD v2"
+    check: "test -f ${agnosticd_root}/bin/agd"
+    action: "git clone https://github.com/tosin2013/agnosticd-v2.git ${agnosticd_root}"
+    prompt_var: agnosticd_root
+    prompt: "AgnosticD v2 install path"
+    default: "~/Development/agnosticd-v2"
+
+  - name: "Run agd setup"
+    check: "test -d ${agnosticd_root}/../agnosticd-v2-virtualenv"
+    action: "cd ${agnosticd_root} && ./bin/agd setup"
+
+  - name: "Create secrets file for account"
+    check: "test -f ${agnosticd_root}/../agnosticd-v2-secrets/secrets-${account}.yml"
+    action: |
+      cp ${agnosticd_root}/../agnosticd-v2-secrets/secrets-sandboxXXX.yml \
+         ${agnosticd_root}/../agnosticd-v2-secrets/secrets-${account}.yml && \
+      echo "Created secrets-${account}.yml — fill in your AWS credentials."
+
+  - name: "Configure AWS CLI"
+    check: "aws sts get-caller-identity >/dev/null 2>&1"
+    action: "aws configure"
+
+# ─────────────────────────────────────────────────────────────
+# Configuration Prompts
+# ─────────────────────────────────────────────────────────────
+
+config:
+  output_file: agnosticd/config.yml
+  gitignore: true
+
+  prompts:
+    - key: account
+      prompt: "Account name (matches your secrets filename)"
+      default: "sandbox2530"
+      required: true
+
+    - key: aws_region
+      prompt: "AWS region"
+      default: "us-east-2"
+
+    - key: base_domain
+      prompt: "Base domain (Route53 hosted zone)"
+      default: "sandbox2530.opentlc.com"
+      required: true
+
+    - key: owner
+      prompt: "Owner email (AWS resource tag)"
+      default: "tosin@redhat.com"
+      required: true
+
+    - key: num_students
+      prompt: "Number of student clusters"
+      default: "2"
+
+    - key: deploy_hub
+      prompt: "Deploy hub cluster (RHACM + Showroom)?"
+      choices: ["true", "false"]
+      default: "true"
+
+    - key: hub_guid
+      prompt: "Hub cluster GUID"
+      default: "linbit-hub"
+
+    - key: parallel
+      prompt: "Deploy student clusters in parallel?"
+      choices: ["true", "false"]
+      default: "false"
+
+    - key: agnosticd_root
+      prompt: "AgnosticD v2 install path"
+      default: "~/Development/agnosticd-v2"
+
+    - key: pull_secret_path
+      prompt: "Path to OpenShift pull secret"
+      default: "~/pull-secret.json"
+
+# ─────────────────────────────────────────────────────────────
+# Validation Checks
+# ─────────────────────────────────────────────────────────────
+
+validation:
+  - name: "AWS credentials"
+    command: "aws sts get-caller-identity"
+    required: true
+    fail_message: >-
+      AWS credentials not configured.
+      Run 'aws configure' or check ~/.aws/credentials.
+
+  - name: "Pull secret exists"
+    command: "test -f ${pull_secret_path}"
+    required: true
+    fail_message: >-
+      Download your pull secret from
+      https://console.redhat.com/openshift/downloads
+
+  - name: "Pull secret is valid JSON"
+    command: "python3 -m json.tool ${pull_secret_path} > /dev/null 2>&1"
+    required: true
+    fail_message: "Pull secret file is not valid JSON. Re-download it."
+
+  - name: "AgnosticD agd binary"
+    command: "test -x ${agnosticd_root}/bin/agd"
+    required: true
+    fail_message: "AgnosticD not found at ${agnosticd_root}. Re-run onboarding."
+
+  - name: "Secrets file exists"
+    command: "test -f ${agnosticd_root}/../agnosticd-v2-secrets/secrets-${account}.yml"
+    required: true
+    fail_message: >-
+      Secrets file not found. Create it:
+      cp secrets-sandboxXXX.yml secrets-${account}.yml
+
+  - name: "Secrets file has AWS credentials"
+    command: "grep -q 'aws_access_key_id:' ${agnosticd_root}/../agnosticd-v2-secrets/secrets-${account}.yml && ! grep -q '<Your' ${agnosticd_root}/../agnosticd-v2-secrets/secrets-${account}.yml"
+    required: true
+    fail_message: >-
+      Secrets file still has placeholder values.
+      Edit secrets-${account}.yml and fill in your AWS credentials.
+
+  - name: "Route53 hosted zone"
+    command: "aws route53 list-hosted-zones --query \"HostedZones[?Name=='${base_domain}.']\" --output text | grep -q HOSTED"
+    required: false
+    fail_message: >-
+      No Route53 hosted zone found for ${base_domain}.
+      The OpenShift installer requires a matching hosted zone.
+
+# ─────────────────────────────────────────────────────────────
+# Quota Checks
+# ─────────────────────────────────────────────────────────────
+
+quota_checks:
+  # Hub HA: ~30 vCPUs, each TNA student: ~22 vCPUs
+  # Default 2 students: 30 + 44 = 74
+  - label: "EC2 vCPUs (On-Demand Standard)"
+    needed: 74
+    limit_command: >-
+      aws service-quotas get-service-quota
+        --service-code ec2 --quota-code L-1216C47A
+        --region ${aws_region}
+        --query 'Quota.Value' --output text
+    usage_command: >-
+      aws ec2 describe-instances
+        --region ${aws_region}
+        --filters Name=instance-state-name,Values=running
+        --query 'sum(Reservations[].Instances[].CpuOptions.CoreCount) * 2' --output text
+    fail_message: >-
+      Request a vCPU limit increase at
+      https://console.aws.amazon.com/servicequotas/
+
+  - label: "Elastic IPs"
+    needed: 3
+    limit_command: >-
+      aws service-quotas get-service-quota
+        --service-code ec2 --quota-code L-0263D0A3
+        --region ${aws_region}
+        --query 'Quota.Value' --output text
+    usage_command: >-
+      aws ec2 describe-addresses
+        --region ${aws_region}
+        --query 'Addresses | length(@)' --output text
+    fail_message: "Release unused Elastic IPs or request a limit increase."
+
+  - label: "VPCs"
+    needed: 3
+    limit_command: >-
+      aws service-quotas get-service-quota
+        --service-code vpc --quota-code L-F678F1CE
+        --region ${aws_region}
+        --query 'Quota.Value' --output text
+    usage_command: >-
+      aws ec2 describe-vpcs
+        --region ${aws_region}
+        --query 'Vpcs | length(@)' --output text
+    fail_message: "Delete unused VPCs or request a limit increase."
+
+# ─────────────────────────────────────────────────────────────
+# Post-Setup Message
+# ─────────────────────────────────────────────────────────────
+
+post_setup:
+  message: |
+    Setup complete! Your environment is ready.
+
+    Deployment architecture:
+      Hub cluster:     HA (3 CP + 2 Workers) — RHACM + Showroom
+      Student clusters: ${num_students} x TNA (2 primary + 1 arbiter) — LINBIT SDS
+
+    Ensure your secrets file has real AWS credentials:
+      ${agnosticd_root}/../agnosticd-v2-secrets/secrets-${account}.yml
+
+    Deploy:
+      make deploy
+      # or: ./agnosticd/deploy.sh
+
+    Lifecycle:
+      make stop       # hibernate (saves AWS costs)
+      make start      # resume
+      make status     # check cluster health
+      make teardown   # destroy everything
+
+    Workshop content:
+      https://tosin2013.github.io/openshift-tnf-edge-storage/
+
+# ─────────────────────────────────────────────────────────────
+# Modes
+# ─────────────────────────────────────────────────────────────
+
+modes:
+  dev:
+    description: "Set up maintainer/contributor development environment"
+    phases: [prerequisites, setup_steps, config, validation]
+    extra_prerequisites:
+      - name: shellcheck
+        check_command: "command -v shellcheck"
+        install:
+          macos: "brew install shellcheck"
+          rhel9: "sudo dnf install -y ShellCheck"
+          rhel10: "sudo dnf install -y ShellCheck"
+          fedora: "sudo dnf install -y ShellCheck"
+          debian: "sudo apt-get install -y shellcheck"
+          fallback: "Install ShellCheck from https://www.shellcheck.net/"
+      - name: yamllint
+        check_command: "command -v yamllint"
+        install:
+          macos: "brew install yamllint"
+          rhel9: "pip3 install yamllint"
+          rhel10: "pip3 install yamllint"
+          fedora: "sudo dnf install -y yamllint"
+          debian: "sudo apt-get install -y yamllint"
+          fallback: "pip3 install yamllint"
+      - name: helm
+        check_command: "helm version --short"
+        version_regex: "v(\\d+\\.\\d+)"
+        min_version: "3.12"
+        install:
+          macos: "brew install helm"
+          rhel9: "sudo dnf install -y helm"
+          rhel10: "sudo dnf install -y helm"
+          fedora: "sudo dnf install -y helm"
+          debian: "sudo snap install helm --classic"
+          fallback: "Install Helm from https://helm.sh/docs/intro/install/"
+  prod:
+    description: "Set up and deploy for workshop delivery"
+    phases: [prerequisites, setup_steps, config, validation, deploy]
+    post_validation_command: "./agnosticd/deploy.sh"

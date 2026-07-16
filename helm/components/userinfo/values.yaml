@@ -1,0 +1,7 @@
+userinfo:
+  namespace: linbit-workshop
+  title: "LINBIT Edge Storage Workshop"
+  message: "LINBIT Edge Storage Workshop ready"
+
+deployer:
+  domain: ""

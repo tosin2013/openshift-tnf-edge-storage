@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: linbit-workshop-userinfo
+  namespace: {{ .Values.userinfo.namespace }}
+  labels:
+    demo.redhat.com/userinfo: ""
+data:
+  title: {{ .Values.userinfo.title | quote }}
+  msg: {{ .Values.userinfo.message | quote }}
+  {{- if .Values.deployer.domain }}
+  sample_db_connection: "postgresql://demo:demo@sample-db.{{ .Values.userinfo.namespace }}.svc:5432/workshop"
+  openshift_console_url: "https://console-openshift-console.{{ .Values.deployer.domain }}"
+  {{- end }}

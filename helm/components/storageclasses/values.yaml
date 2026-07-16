@@ -1,0 +1,11 @@
+rwoLocality:
+  name: linbit-rwo-locality
+  replicaCount: 2
+  storagePool: lvm-thin
+  fsType: xfs
+
+rwxVirt:
+  name: linbit-rwx-virt
+  replicaCount: 2
+  storagePool: lvm-thin
+  allowTwoPrimaries: true

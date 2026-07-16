@@ -1,0 +1,4 @@
+vm:
+  namespace: linbit-workshop
+  storageClassName: linbit-rwx-virt
+  diskSize: 20Gi

@@ -1,0 +1,5 @@
+apiVersion: v2
+name: linstor-operator
+description: LINBIT LINSTOR Operator via OLM with cluster and satellite configuration
+type: application
+version: 0.1.0

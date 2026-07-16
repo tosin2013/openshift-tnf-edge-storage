@@ -1,0 +1,185 @@
+{{- if .Values.components.linstorOperator.enabled }}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: {{ .Release.Name }}-linstor-operator
+  namespace: {{ .Values.argocd.namespace }}
+  labels:
+    demo.redhat.com/application: "linbit-edge-storage"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: {{ .Values.argocd.project }}
+  source:
+    repoURL: {{ .Values.gitops.repoUrl }}
+    targetRevision: {{ .Values.gitops.revision }}
+    path: {{ .Values.gitops.basePath }}/components/linstor-operator
+    helm:
+      valuesObject:
+        operator:
+          enabled: {{ .Values.components.linstorOperator.enabled }}
+          namespace: {{ .Values.components.linstorOperator.namespace }}
+          channel: {{ .Values.components.linstorOperator.channel }}
+          source: {{ .Values.components.linstorOperator.source }}
+          sourceNamespace: {{ .Values.components.linstorOperator.sourceNamespace }}
+          installPlanApproval: {{ .Values.components.linstorOperator.installPlanApproval }}
+        storagePool:
+          name: {{ .Values.components.linstorOperator.storagePool.name }}
+          providerType: {{ .Values.components.linstorOperator.storagePool.providerType }}
+          devicePaths:
+          {{- range .Values.components.linstorOperator.storagePool.devicePaths }}
+            - {{ . }}
+          {{- end }}
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: {{ .Values.components.linstorOperator.namespace }}
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+{{- end }}
+
+{{- if .Values.components.storageclasses.enabled }}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: {{ .Release.Name }}-storageclasses
+  namespace: {{ .Values.argocd.namespace }}
+  labels:
+    demo.redhat.com/application: "linbit-edge-storage"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: {{ .Values.argocd.project }}
+  source:
+    repoURL: {{ .Values.gitops.repoUrl }}
+    targetRevision: {{ .Values.gitops.revision }}
+    path: {{ .Values.gitops.basePath }}/components/storageclasses
+    helm:
+      valuesObject:
+        rwoLocality:
+          name: {{ .Values.components.storageclasses.rwoLocality.name }}
+          replicaCount: {{ .Values.components.storageclasses.rwoLocality.replicaCount }}
+          storagePool: {{ .Values.components.storageclasses.rwoLocality.storagePool }}
+          fsType: {{ .Values.components.storageclasses.rwoLocality.fsType }}
+        rwxVirt:
+          name: {{ .Values.components.storageclasses.rwxVirt.name }}
+          replicaCount: {{ .Values.components.storageclasses.rwxVirt.replicaCount }}
+          storagePool: {{ .Values.components.storageclasses.rwxVirt.storagePool }}
+          allowTwoPrimaries: {{ .Values.components.storageclasses.rwxVirt.allowTwoPrimaries }}
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+{{- end }}
+
+{{- if .Values.components.sampleDatabase.enabled }}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: {{ .Release.Name }}-sample-database
+  namespace: {{ .Values.argocd.namespace }}
+  labels:
+    demo.redhat.com/application: "linbit-edge-storage"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: {{ .Values.argocd.project }}
+  source:
+    repoURL: {{ .Values.gitops.repoUrl }}
+    targetRevision: {{ .Values.gitops.revision }}
+    path: {{ .Values.gitops.basePath }}/components/sample-database
+    helm:
+      valuesObject:
+        database:
+          namespace: {{ .Values.components.sampleDatabase.namespace }}
+          storageClassName: {{ .Values.components.sampleDatabase.storageClassName }}
+          storageSize: {{ .Values.components.sampleDatabase.storageSize }}
+          image: {{ .Values.components.sampleDatabase.image }}
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: {{ .Values.components.sampleDatabase.namespace }}
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+{{- end }}
+
+{{- if .Values.components.sampleVm.enabled }}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: {{ .Release.Name }}-sample-vm
+  namespace: {{ .Values.argocd.namespace }}
+  labels:
+    demo.redhat.com/application: "linbit-edge-storage"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: {{ .Values.argocd.project }}
+  source:
+    repoURL: {{ .Values.gitops.repoUrl }}
+    targetRevision: {{ .Values.gitops.revision }}
+    path: {{ .Values.gitops.basePath }}/components/sample-vm
+    helm:
+      valuesObject:
+        vm:
+          namespace: {{ .Values.components.sampleVm.namespace }}
+          storageClassName: {{ .Values.components.sampleVm.storageClassName }}
+          diskSize: {{ .Values.components.sampleVm.diskSize }}
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: {{ .Values.components.sampleVm.namespace }}
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+{{- end }}
+
+{{- if .Values.components.userinfo.enabled }}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: {{ .Release.Name }}-userinfo
+  namespace: {{ .Values.argocd.namespace }}
+  labels:
+    demo.redhat.com/application: "linbit-edge-storage"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: {{ .Values.argocd.project }}
+  source:
+    repoURL: {{ .Values.gitops.repoUrl }}
+    targetRevision: {{ .Values.gitops.revision }}
+    path: {{ .Values.gitops.basePath }}/components/userinfo
+    helm:
+      valuesObject:
+        userinfo:
+          namespace: {{ .Values.components.userinfo.namespace }}
+          title: {{ .Values.components.userinfo.title | quote }}
+          message: {{ .Values.components.userinfo.message | quote }}
+        deployer:
+          domain: {{ .Values.deployer.domain | quote }}
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: {{ .Values.components.userinfo.namespace }}
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+{{- end }}

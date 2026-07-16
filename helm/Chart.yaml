@@ -1,0 +1,8 @@
+apiVersion: v2
+name: linbit-edge-storage
+description: App of Apps - Deploy LINBIT SDS workshop components via ArgoCD Applications
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+maintainers:
+  - name: Tosin Akinosho

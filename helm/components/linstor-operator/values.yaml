@@ -1,0 +1,13 @@
+operator:
+  enabled: true
+  namespace: linbit-sds
+  channel: stable
+  source: certified-operators
+  sourceNamespace: openshift-marketplace
+  installPlanApproval: Automatic
+
+storagePool:
+  name: lvm-thin
+  providerType: "LVM_THIN"
+  devicePaths:
+    - /dev/xvdb

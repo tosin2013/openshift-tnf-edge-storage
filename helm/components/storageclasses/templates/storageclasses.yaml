@@ -1,0 +1,27 @@
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: {{ .Values.rwoLocality.name }}
+provisioner: linstor.csi.linbit.com
+parameters:
+  autoPlace: "{{ .Values.rwoLocality.replicaCount }}"
+  storagePool: {{ .Values.rwoLocality.storagePool }}
+  csi.storage.k8s.io/fstype: {{ .Values.rwoLocality.fsType }}
+volumeBindingMode: WaitForFirstConsumer
+reclaimPolicy: Delete
+allowVolumeExpansion: true
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: {{ .Values.rwxVirt.name }}
+provisioner: linstor.csi.linbit.com
+parameters:
+  autoPlace: "{{ .Values.rwxVirt.replicaCount }}"
+  storagePool: {{ .Values.rwxVirt.storagePool }}
+  {{- if .Values.rwxVirt.allowTwoPrimaries }}
+  property.linstor.csi.linbit.com/DrbdOptions/Net/allow-two-primaries: "yes"
+  {{- end }}
+volumeBindingMode: Immediate
+reclaimPolicy: Delete
+allowVolumeExpansion: true

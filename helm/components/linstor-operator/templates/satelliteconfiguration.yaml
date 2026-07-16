@@ -1,0 +1,19 @@
+{{- if .Values.operator.enabled }}
+apiVersion: piraeus.io/v1
+kind: LinstorSatelliteConfiguration
+metadata:
+  name: storage-pool-config
+  namespace: {{ .Values.operator.namespace }}
+spec:
+  storagePools:
+    - name: {{ .Values.storagePool.name }}
+      {{- if eq .Values.storagePool.providerType "LVM_THIN" }}
+      lvmThinPool:
+        volumeGroup: linstor_{{ .Values.storagePool.name }}
+      source:
+        hostDevices:
+        {{- range .Values.storagePool.devicePaths }}
+          - {{ . }}
+        {{- end }}
+      {{- end }}
+{{- end }}

@@ -1,0 +1,8 @@
+{{- if .Values.operator.enabled }}
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: linstor-operator
+  namespace: {{ .Values.operator.namespace }}
+spec: {}
+{{- end }}

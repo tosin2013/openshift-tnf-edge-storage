@@ -1,0 +1,5 @@
+database:
+  namespace: linbit-workshop
+  storageClassName: linbit-rwo-locality
+  storageSize: 10Gi
+  image: registry.redhat.io/rhel9/postgresql-15:latest

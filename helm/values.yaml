@@ -1,0 +1,75 @@
+# LINBIT Edge Storage Workshop - App of Apps
+# Deploys onto STUDENT clusters (not the hub).
+# Hub runs RHACM + Showroom separately via AgnosticD.
+
+# ============================================================
+# GitOps Configuration
+# ============================================================
+gitops:
+  repoUrl: "https://github.com/tosin2013/openshift-tnf-edge-storage.git"
+  revision: "main"
+  basePath: "helm"
+
+argocd:
+  namespace: openshift-gitops
+  project: default
+
+# ============================================================
+# Components - Enable/disable each student workload
+# ============================================================
+components:
+
+  linstorOperator:
+    enabled: true
+    namespace: linbit-sds
+    channel: stable
+    source: certified-operators
+    sourceNamespace: openshift-marketplace
+    installPlanApproval: Automatic
+    storagePool:
+      name: lvm-thin
+      devicePaths:
+        - /dev/xvdb
+      providerType: "LVM_THIN"
+
+  storageclasses:
+    enabled: true
+    rwoLocality:
+      name: linbit-rwo-locality
+      replicaCount: 2
+      storagePool: lvm-thin
+      fsType: xfs
+    rwxVirt:
+      name: linbit-rwx-virt
+      replicaCount: 2
+      storagePool: lvm-thin
+      allowTwoPrimaries: true
+
+  sampleDatabase:
+    enabled: true
+    namespace: linbit-workshop
+    storageClassName: linbit-rwo-locality
+    storageSize: 10Gi
+    image: registry.redhat.io/rhel9/postgresql-15:latest
+
+  sampleVm:
+    enabled: true
+    namespace: linbit-workshop
+    storageClassName: linbit-rwx-virt
+    diskSize: 20Gi
+
+  userinfo:
+    enabled: true
+    namespace: linbit-workshop
+    title: "LINBIT Edge Storage Workshop"
+    message: "LINBIT Edge Storage Workshop ready"
+
+# ============================================================
+# Values injected by field content workload (do not modify)
+# ============================================================
+deployer:
+  domain: ""
+  apiUrl: ""
+
+fieldContent:
+  deploymentType: "helm"

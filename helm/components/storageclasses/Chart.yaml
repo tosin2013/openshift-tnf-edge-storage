@@ -1,0 +1,5 @@
+apiVersion: v2
+name: storageclasses
+description: LINSTOR-backed StorageClasses for RWO locality and RWX block VM migration
+type: application
+version: 0.1.0

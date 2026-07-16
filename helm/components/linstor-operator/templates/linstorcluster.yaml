@@ -1,0 +1,8 @@
+{{- if .Values.operator.enabled }}
+apiVersion: piraeus.io/v1
+kind: LinstorCluster
+metadata:
+  name: linstorcluster
+  namespace: {{ .Values.operator.namespace }}
+spec: {}
+{{- end }}

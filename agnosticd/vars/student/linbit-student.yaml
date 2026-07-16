@@ -1,0 +1,70 @@
+---
+# ===================================================================
+# LINBIT Edge Storage Workshop - Student Cluster
+# TNA topology (2 primary + 1 arbiter) with LINBIT SDS workloads.
+# One cluster per student, deployed via Field Content Helm chart.
+# ===================================================================
+
+cloud_provider: aws
+config: openshift-cluster
+
+aws_region: us-east-2
+
+cloud_tags:
+  - owner: tosin@redhat.com
+  - Purpose: linbit-workshop-student
+  - config: "{{ config }}"
+  - guid: "{{ guid }}"
+
+host_ssh_authorized_keys:
+  - key: https://github.com/tosin2013.keys
+
+bastion_setup_student_user: true
+bastion_student_user_name: lab-user
+
+# ===================================================================
+# OpenShift Settings - TNA (2 primary workers + 1 arbiter)
+# ===================================================================
+cluster_name: linbit-student
+
+host_ocp4_installer_version: "4.22"
+host_ocp4_installer_root_url: http://mirror.openshift.com/pub/openshift-v4/clients
+host_ocp4_installer_set_user_data_kubeadmin_password: true
+
+subdomain_base_suffix: .sandbox2530.opentlc.com
+
+# ===================================================================
+# Workloads (deployed on student clusters)
+# ===================================================================
+workloads:
+  - ocp4_workload_cert_manager
+  - ocp4_workload_field_content
+  - ocp4_workload_rhacm_import
+
+# ===================================================================
+# Workload: ocp4_workload_cert_manager
+# ===================================================================
+ocp4_workload_cert_manager_channel: stable-v1.15
+ocp4_workload_cert_manager_aws_region: "{{ aws_region }}"
+ocp4_workload_cert_manager_aws_access_key_id: "{{ hostvars.localhost.route53user_access_key }}"
+ocp4_workload_cert_manager_aws_secret_access_key: "{{ hostvars.localhost.route53user_secret_access_key }}"
+ocp4_workload_cert_manager_use_catalog_snapshot: false
+ocp4_workload_cert_manager_install_ingress_certificates: true
+ocp4_workload_cert_manager_install_api_certificates: false
+
+# ===================================================================
+# Workload: ocp4_workload_field_content
+# Deploys the LINBIT Helm chart via ArgoCD
+# ===================================================================
+ocp4_workload_field_content_gitops_repo_url: "https://github.com/tosin2013/openshift-tnf-edge-storage.git"
+ocp4_workload_field_content_gitops_repo_path: "helm"
+ocp4_workload_field_content_namespace: openshift-gitops
+
+# ===================================================================
+# Workload: ocp4_workload_rhacm_import
+# Registers this student cluster to the hub's RHACM.
+# hub_api_url and hub_token are injected at deploy time by deploy.sh.
+# ===================================================================
+ocp4_workload_rhacm_import_hub_api_url: ""
+ocp4_workload_rhacm_import_hub_token: ""
+ocp4_workload_rhacm_import_student_cluster_name: "{{ guid }}"

@@ -1,0 +1,75 @@
+---
+# ===================================================================
+# LINBIT Edge Storage Workshop - Hub Cluster
+# Runs RHACM + Showroom. No LINBIT workloads.
+# ===================================================================
+
+cloud_provider: aws
+config: openshift-cluster
+
+aws_region: us-east-2
+
+cloud_tags:
+  - owner: tosin@redhat.com
+  - Purpose: linbit-workshop-hub
+  - config: "{{ config }}"
+  - guid: "{{ guid }}"
+
+host_ssh_authorized_keys:
+  - key: https://github.com/tosin2013.keys
+
+bastion_setup_student_user: true
+bastion_student_user_name: lab-user
+
+# ===================================================================
+# OpenShift Settings - HA Hub (3 CP + 2 Workers)
+# ===================================================================
+cluster_name: linbit-hub
+
+host_ocp4_installer_version: "4.22"
+host_ocp4_installer_root_url: http://mirror.openshift.com/pub/openshift-v4/clients
+host_ocp4_installer_set_user_data_kubeadmin_password: true
+
+subdomain_base_suffix: .sandbox2530.opentlc.com
+
+# ===================================================================
+# Infra Workloads (deployed on the hub)
+# ===================================================================
+infra_workloads:
+  - ocp4_workload_cert_manager
+  - ocp4_workload_authentication
+  - ocp4_workload_rhacm
+  - ocp4_workload_showroom
+
+# ===================================================================
+# Workload: ocp4_workload_cert_manager
+# ===================================================================
+ocp4_workload_cert_manager_channel: stable-v1.15
+ocp4_workload_cert_manager_aws_region: "{{ aws_region }}"
+ocp4_workload_cert_manager_aws_access_key_id: "{{ hostvars.localhost.route53user_access_key }}"
+ocp4_workload_cert_manager_aws_secret_access_key: "{{ hostvars.localhost.route53user_secret_access_key }}"
+ocp4_workload_cert_manager_use_catalog_snapshot: false
+ocp4_workload_cert_manager_install_ingress_certificates: true
+ocp4_workload_cert_manager_install_api_certificates: false
+
+# ===================================================================
+# Workload: ocp4_workload_authentication (htpasswd for admin)
+# ===================================================================
+ocp4_workload_authentication_provider: htpasswd
+ocp4_workload_authentication_admin_username: admin
+ocp4_workload_authentication_remove_kubeadmin: false
+
+# ===================================================================
+# Workload: ocp4_workload_rhacm
+# ===================================================================
+ocp4_workload_rhacm_version: "2.17"
+ocp4_workload_rhacm_availability: High
+ocp4_workload_rhacm_enable_cluster_backup: false
+
+# ===================================================================
+# Workload: ocp4_workload_showroom
+# ===================================================================
+ocp4_workload_showroom_content_git_repo: "https://github.com/tosin2013/openshift-tnf-edge-storage.git"
+ocp4_workload_showroom_content_git_repo_ref: main
+ocp4_workload_showroom_terminal_type: showroom
+ocp4_workload_showroom_terminal_image: "quay.io/rhpds/openshift-showroom-terminal-ocp:latest"

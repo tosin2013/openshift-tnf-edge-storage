@@ -1,0 +1,21 @@
+# KVM / Bare-metal TNF overrides
+# Single-user only. No hub, no RHACM.
+# Apply with: helm template . -f values.yaml -f values-tnf.yaml
+
+components:
+
+  linstorOperator:
+    storagePool:
+      name: lvm-thin
+      devicePaths:
+        - /dev/vdb
+      providerType: "LVM_THIN"
+
+  # MinIO provides S3-compatible endpoint for DR snapshots
+  # when real AWS S3 is not available (KVM/bare-metal)
+  minio:
+    enabled: true
+    namespace: linbit-workshop
+    accessKey: minioadmin
+    secretKey: minioadmin
+    bucketName: workshop-backups

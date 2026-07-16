@@ -1,0 +1,5 @@
+apiVersion: v2
+name: sample-vm
+description: VM disk PVC for Module 3 live migration exercises
+type: application
+version: 0.1.0

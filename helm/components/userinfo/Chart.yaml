@@ -1,0 +1,5 @@
+apiVersion: v2
+name: userinfo
+description: RHDP data passback ConfigMap for student-facing display
+type: application
+version: 0.1.0
