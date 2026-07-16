@@ -21,3 +21,16 @@ generated_assets/
 **/auth/
 **/kubeconfig
 *.iso
+
+# Antora build output
+www/
+.cache/
+node_modules/
+
+# Logs and temp files
+*.log
+*.tmp
+
+# Package lock files
+package-lock.json
+yarn.lock

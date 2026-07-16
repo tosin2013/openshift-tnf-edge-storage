@@ -1,0 +1,111 @@
+= LINBIT Edge Storage Workshop
+:page-layout: home
+
+== Overview
+
+Welcome to the *LINBIT Edge Storage Workshop* -- a hands-on lab for deploying and operating high-performance persistent storage with *LINBIT SDS (LINSTOR + DRBD)* on *OpenShift 4.22+*.
+
+This workshop targets Solutions Architects and platform engineers evaluating storage for edge, minimal-footprint, and two-node topologies where Ceph/ODF is impractical.
+
+== What You Will Learn
+
+By completing these modules you will be able to:
+
+. Describe LINSTOR/DRBD architecture and explain the control-plane vs data-plane separation
+. Configure topology-aware StorageClasses for database locality using `WaitForFirstConsumer`
+. Perform zero-downtime VM live migration with block-level RWX and `allow-two-primaries`
+. Demonstrate cluster resilience under node failure using DRBD quorum
+. Execute incremental S3 snapshot shipping for geographic disaster recovery
+
+== Lab Environment
+
+Your cluster has been pre-provisioned with everything you need:
+
+[cols="1,2"]
+|===
+| Component | Description
+
+| *OpenShift 4.22+*
+| Two-Node with Arbiter (TNA), Compact 3-node, or Two-Node Fencing (TNF) cluster
+
+| *LINSTOR Operator*
+| Deployed via OLM with satellites running on all schedulable nodes
+
+| *StorageClasses*
+| Pre-configured RWO locality class and Virt block-RWX class
+
+| *PostgreSQL*
+| Sample StatefulSet for database benchmarking exercises
+
+| *VM Disk*
+| Block-mode PVC for live migration exercises
+
+| *Showroom*
+| This lab guide with integrated terminal and OpenShift console
+|===
+
+== Cluster Topology
+
+[tabs]
+====
+AWS (Default)::
++
+Your cluster uses the *Two-Node with Arbiter (TNA)* or *Compact 3-node* topology on AWS EC2.
+LINSTOR uses EBS-backed storage pools on primary nodes and a diskless tiebreaker on the arbiter node for quorum.
+
+KVM / Bare Metal (Advanced)::
++
+Your cluster uses the *Two-Node Fencing (TNF)* topology with Redfish STONITH.
+LINSTOR uses local or virtio disks and two diskful replicas with Pacemaker-based fencing for split-brain prevention.
+====
+
+== Workshop Modules
+
+[cols="1,3,1"]
+|===
+| Module | Topic | Duration
+
+| xref:module-01.adoc[Module 1]
+| Storage Foundations -- LINSTOR/DRBD architecture, storage pools, diskful vs diskless
+| 30 min
+
+| xref:module-02.adoc[Module 2]
+| Database Locality -- `WaitForFirstConsumer`, pgbench, local-read performance
+| 45 min
+
+| xref:module-03.adoc[Module 3]
+| VM Live Migration -- block RWX, `allow-two-primaries`, zero-downtime migration
+| 45 min
+
+| xref:module-04.adoc[Module 4]
+| Resilience Under Failure -- node failure, DRBD quorum, arbiter/tiebreaker (or TNF fencing)
+| 30 min
+
+| xref:module-05.adoc[Module 5]
+| Disaster Recovery -- S3 snapshot shipping, incremental block deltas
+| 45 min
+|===
+
+Total estimated time: *3 hours 15 minutes*
+
+== Credentials
+
+Use the following credentials throughout the lab:
+
+[cols="1,2"]
+|===
+| Resource | Value
+
+| OpenShift Console
+| {openshift_console_url}[Launch Console,window=_blank]
+
+| Admin User
+| `{admin_user}`
+
+| Admin Password
+| `{admin_password}`
+|===
+
+== Ready?
+
+When you are ready, proceed to xref:module-01.adoc[Module 1: Storage Foundations].

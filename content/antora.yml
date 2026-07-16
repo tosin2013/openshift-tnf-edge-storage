@@ -1,0 +1,19 @@
+name: modules
+title: LINBIT Edge Storage Workshop
+version: ~
+nav:
+  - modules/ROOT/nav.adoc
+
+asciidoc:
+  attributes:
+    experimental: true
+    page-pagination: true
+    guid: "%guid%"
+    openshift_cluster_ingress_domain: "%openshift_cluster_ingress_domain%"
+    openshift_console_url: "https://console-openshift-console.apps.%openshift_cluster_ingress_domain%"
+    api_url: "%api_url%"
+    admin_user: "kubeadmin"
+    admin_password: "%admin_password%"
+    ssh_user: "lab-user"
+    linbit_namespace: "linbit-sds"
+    workshop_namespace: "linbit-workshop"

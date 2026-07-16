@@ -1,0 +1,188 @@
+= Module 4: Resilience Under Failure
+:navtitle: 4. Resilience Under Failure
+
+[sidebar]
+****
+*Duration:* 30 minutes +
+*Objective:* Simulate a node failure and verify storage + workload continuity with DRBD quorum.
+****
+
+== Introduction
+
+DRBD uses a *quorum* mechanism to prevent split-brain data corruption.
+In a two-node cluster, a third quorum participant is needed -- either a diskless tiebreaker (TNA/Compact topologies) or a fencing agent (TNF topology).
+
+In this module you will drain or cordon a node, observe DRBD quorum behavior, and verify that workloads continue running on the surviving node.
+
+[tabs]
+====
+AWS (TNA / Compact)::
++
+Follow the *Default Path* steps below.
+The arbiter node provides a diskless tiebreaker for DRBD quorum -- no fencing hardware is required.
+
+KVM / Bare Metal (TNF)::
++
+Follow the *TNF Path* steps at the end of this module.
+Pacemaker triggers STONITH via Redfish to isolate the failed node.
+====
+
+== Default Path (AWS TNA / Compact)
+
+=== Step 1: Identify the Diskless Tiebreaker
+
+List all DRBD resources and note the diskless participant:
+
+[source,bash,role=execute]
+----
+oc exec -n {linbit_namespace} deploy/linstor-controller -- linstor resource list
+----
+
+On a TNA cluster, the arbiter node shows `TieBreaker` or `DisklessClient` state.
+This node does not store data but votes in DRBD quorum decisions.
+
+=== Step 2: Identify the Node to Cordon
+
+Pick a primary (diskful) node -- not the arbiter.
+List nodes and choose one:
+
+[source,bash,role=execute]
+----
+oc get nodes -l node-role.kubernetes.io/worker
+----
+
+Set a variable for convenience (replace with your node name):
+
+[source,bash,role=execute]
+----
+export CORDON_NODE=<your-worker-node-name>
+----
+
+=== Step 3: Cordon the Node
+
+Mark the node as unschedulable:
+
+[source,bash,role=execute]
+----
+oc adm cordon ${CORDON_NODE}
+----
+
+=== Step 4: Drain Workloads
+
+Drain the node to force workload rescheduling:
+
+[source,bash,role=execute]
+----
+oc adm drain ${CORDON_NODE} --ignore-daemonsets --delete-emptydir-data --timeout=120s
+----
+
+=== Step 5: Verify DRBD Quorum
+
+Check that DRBD volumes remain quorate:
+
+[source,bash,role=execute]
+----
+oc exec -n {linbit_namespace} deploy/linstor-controller -- linstor resource list
+----
+
+The surviving diskful node + diskless tiebreaker = 2/3 majority.
+Volumes should show `UpToDate` on the surviving node.
+
+=== Step 6: Verify Workload Continuity
+
+Confirm the database pod rescheduled to the surviving node:
+
+[source,bash,role=execute]
+----
+oc get pods -n {workshop_namespace} -l app=sample-db -o wide
+----
+
+Test that the database is still accessible:
+
+[source,bash,role=execute]
+----
+oc exec -n {workshop_namespace} deploy/sample-db -- psql -U demo -d workshop -c "SELECT 1 AS alive;"
+----
+
+=== Step 7: Uncordon and Resync
+
+Restore the node:
+
+[source,bash,role=execute]
+----
+oc adm uncordon ${CORDON_NODE}
+----
+
+Watch DRBD resynchronize the stale replica:
+
+[source,bash,role=execute]
+----
+oc exec -n {linbit_namespace} deploy/linstor-controller -- linstor resource list
+----
+
+Wait until all resources show `UpToDate` on all nodes.
+
+=== Step 8: Discussion
+
+Consider these questions:
+
+* Why does the TNA model not require fencing hardware?
+* What happens if the arbiter node fails instead of a primary node?
+* How does this compare to Ceph's minimum 3-node OSD requirement?
+
+== TNF Path (KVM / Bare Metal) -- Advanced
+
+WARNING: This section requires a TNF cluster with configured Redfish/STONITH fencing.
+
+=== TNF Step 1: Review Fencing Configuration
+
+Examine the Pacemaker fencing resources:
+
+[source,bash,role=execute]
+----
+oc debug node/<your-node> -- chroot /host pcs stonith show
+----
+
+On KVM, fencing uses the sushy emulator (virtual Redfish BMC).
+On bare metal, fencing targets the real BMC endpoint.
+
+=== TNF Step 2: Simulate Node Failure
+
+Power off one node using the sushy API (KVM) or by cordoning (safe alternative):
+
+[source,bash,role=execute]
+----
+# Safe alternative -- cordon and drain
+oc adm cordon <your-second-node>
+oc adm drain <your-second-node> --ignore-daemonsets --delete-emptydir-data --timeout=120s
+----
+
+=== TNF Step 3: Observe STONITH Response
+
+On a real TNF cluster with fencing enabled, Pacemaker would:
+
+. Detect the failed node
+. Trigger STONITH via Redfish to power-cycle or isolate the node
+. The surviving node assumes all workloads and DRBD volumes
+
+=== TNF Step 4: Verify and Restore
+
+Verify workloads are running on the surviving node, then restore:
+
+[source,bash,role=execute]
+----
+oc get pods -n {workshop_namespace} -o wide
+oc adm uncordon <your-second-node>
+----
+
+== Summary
+
+In this module you:
+
+* Identified the quorum mechanism for your cluster topology (diskless tiebreaker or STONITH)
+* Simulated a node failure by cordoning and draining
+* Verified DRBD quorum held and workloads continued on the surviving node
+* Observed DRBD resynchronization when the node returned
+* Discussed the trade-offs between TNA (arbiter quorum) and TNF (fencing) models
+
+xref:module-05.adoc[Next: Module 5 -- Disaster Recovery ->]

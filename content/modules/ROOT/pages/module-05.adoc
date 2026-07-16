@@ -1,0 +1,221 @@
+= Module 5: Disaster Recovery
+:navtitle: 5. Disaster Recovery
+
+[sidebar]
+****
+*Duration:* 45 minutes +
+*Objective:* Configure and execute incremental S3 snapshot shipping for geographic disaster recovery.
+****
+
+== Introduction
+
+LINSTOR provides crash-consistent snapshots that can be shipped to an S3-compatible object store.
+Subsequent snapshots ship only the *changed blocks* (incremental deltas), making remote backup bandwidth-efficient -- a critical property for edge sites with limited uplinks.
+
+In this module you will configure an S3 remote, take snapshots of the database PVC, and verify incremental delta shipping.
+
+== Step 1: Configure the S3 Remote
+
+[tabs]
+====
+AWS (Default)::
++
+On AWS, you can use a real S3 bucket.
+Create the LINSTOR remote pointing to your bucket:
++
+[source,bash,role=execute]
+----
+oc exec -n {linbit_namespace} deploy/linstor-controller -- \
+  linstor remote create s3 workshop-dr-target \
+  --endpoint s3.amazonaws.com \
+  --bucket <your-bucket-name> \
+  --region <your-region> \
+  --access-key <your-access-key> \
+  --secret-key <your-secret-key>
+----
+
+KVM / Bare Metal (TNF)::
++
+On TNF, the Helm chart pre-deploys a MinIO instance as an S3-compatible endpoint:
++
+[source,bash,role=execute]
+----
+# Verify MinIO is running
+oc get pods -n {workshop_namespace} -l app=minio
+----
++
+Create the LINSTOR remote pointing to MinIO:
++
+[source,bash,role=execute]
+----
+oc exec -n {linbit_namespace} deploy/linstor-controller -- \
+  linstor remote create s3 workshop-dr-target \
+  --endpoint minio.{workshop_namespace}.svc:9000 \
+  --bucket workshop-backups \
+  --region us-east-1 \
+  --access-key minioadmin \
+  --secret-key minioadmin
+----
+====
+
+Verify the remote was created:
+
+[source,bash,role=execute]
+----
+oc exec -n {linbit_namespace} deploy/linstor-controller -- linstor remote list
+----
+
+== Step 2: Create an Encryption Passphrase (Optional)
+
+If you want to encrypt snapshots at rest in S3:
+
+[source,bash,role=execute]
+----
+oc exec -n {linbit_namespace} deploy/linstor-controller -- \
+  linstor encryption create-passphrase --passphrase workshop-lab-2024
+----
+
+NOTE: In production, use Vault or an external KMS for passphrase management.
+
+== Step 3: Take the First Snapshot
+
+Identify the LINSTOR resource name backing the database PVC:
+
+[source,bash,role=execute]
+----
+oc exec -n {linbit_namespace} deploy/linstor-controller -- linstor resource list
+----
+
+Take a snapshot (replace `<resource-name>` with the actual name):
+
+[source,bash,role=execute]
+----
+oc exec -n {linbit_namespace} deploy/linstor-controller -- \
+  linstor snapshot create <resource-name> snap-baseline
+----
+
+== Step 4: Ship the Snapshot to S3
+
+Ship the baseline snapshot to the remote target:
+
+[source,bash,role=execute]
+----
+oc exec -n {linbit_namespace} deploy/linstor-controller -- \
+  linstor backup create <resource-name> --remote workshop-dr-target
+----
+
+Verify the backup was created:
+
+[source,bash,role=execute]
+----
+oc exec -n {linbit_namespace} deploy/linstor-controller -- \
+  linstor backup list --remote workshop-dr-target
+----
+
+Note the backup ID and size -- this is a *full* backup.
+
+== Step 5: Generate New Data
+
+Write additional data to the database to create a delta:
+
+[source,bash,role=execute]
+----
+oc exec -n {workshop_namespace} deploy/sample-db -- \
+  psql -U demo -d workshop -c "
+    CREATE TABLE IF NOT EXISTS dr_test (id serial PRIMARY KEY, payload text, created_at timestamp DEFAULT now());
+    INSERT INTO dr_test (payload) SELECT md5(random()::text) FROM generate_series(1, 10000);
+  "
+----
+
+Verify the data was inserted:
+
+[source,bash,role=execute]
+----
+oc exec -n {workshop_namespace} deploy/sample-db -- \
+  psql -U demo -d workshop -c "SELECT count(*) FROM dr_test;"
+----
+
+== Step 6: Take an Incremental Snapshot
+
+Take a second snapshot and ship it:
+
+[source,bash,role=execute]
+----
+oc exec -n {linbit_namespace} deploy/linstor-controller -- \
+  linstor backup create <resource-name> --remote workshop-dr-target
+----
+
+List backups again:
+
+[source,bash,role=execute]
+----
+oc exec -n {linbit_namespace} deploy/linstor-controller -- \
+  linstor backup list --remote workshop-dr-target
+----
+
+Compare the sizes:
+
+* The *first* backup is a full copy of the volume
+* The *second* backup ships only the *blocks that changed* since the first snapshot
+
+This incremental approach dramatically reduces bandwidth requirements for remote DR from edge sites.
+
+== Step 7: Discussion
+
+Consider these disaster recovery scenarios:
+
+* *Site loss:* How would you restore from S3 into a new cluster?
+** Use `linstor backup restore` on the recovery cluster, pointing to the same S3 remote
+** Schedule the pod on the restored volume -- data as of the last incremental snapshot
+
+* *RPO (Recovery Point Objective):* How often should you ship snapshots?
+** Block-level deltas are small -- hourly or even more frequent shipping is practical at the edge
+
+* *Encryption:* Why encrypt backup data in S3?
+** S3 buckets may be in a different security zone; encryption-at-rest prevents data exposure
+
+== Clean Up
+
+Remove the test table:
+
+[source,bash,role=execute]
+----
+oc exec -n {workshop_namespace} deploy/sample-db -- \
+  psql -U demo -d workshop -c "DROP TABLE IF EXISTS dr_test;"
+----
+
+Remove the snapshots (optional -- they do not affect the running cluster):
+
+[source,bash,role=execute]
+----
+oc exec -n {linbit_namespace} deploy/linstor-controller -- \
+  linstor snapshot delete <resource-name> snap-baseline
+----
+
+== Summary
+
+In this module you:
+
+* Configured an S3 remote target for LINSTOR backup shipping
+* Took a full baseline snapshot and shipped it to S3
+* Generated new data and took an incremental snapshot
+* Verified that only changed blocks were shipped (delta-only model)
+* Discussed RPO, restoration, and encryption considerations for edge DR
+
+== Workshop Complete
+
+Congratulations! You have completed all five modules of the LINBIT Edge Storage Workshop.
+
+You now have hands-on experience with:
+
+* LINSTOR/DRBD architecture on OpenShift
+* Topology-aware database placement with `WaitForFirstConsumer`
+* Zero-downtime VM live migration with block-level RWX
+* Node failure resilience with DRBD quorum
+* Geographic disaster recovery with incremental S3 snapshot shipping
+
+For additional resources:
+
+* https://linbit.com/drbd-user-guide/linstor-guide-1_0-en/[LINSTOR User Guide]
+* https://docs.openshift.com/container-platform/latest/storage/index.html[OpenShift Storage Documentation]
+* https://github.com/tosin2013/openshift-agent-install[openshift-agent-install] -- for TNF cluster bootstrap

@@ -1,0 +1,210 @@
+= Module 3: VM Live Migration
+:navtitle: 3. VM Live Migration
+
+[sidebar]
+****
+*Duration:* 45 minutes +
+*Objective:* Perform zero-downtime VM live migration using DRBD block-level RWX with `allow-two-primaries`.
+****
+
+== Introduction
+
+Traditional live migration requires shared storage (NFS or similar) to allow both source and destination nodes to access the VM disk simultaneously.
+LINBIT SDS provides this capability at the block level using DRBD's *dual-primary* mode -- both nodes temporarily hold the DRBD resource open during migration, without requiring a network filesystem.
+
+The `allow-two-primaries` flag is guarded by a Kubernetes label gate (`vm.kubevirt.io/name`) so that only VirtualMachine workloads can activate it, preventing accidental dual-writer corruption from regular pods.
+
+== Step 1: Verify OpenShift Virtualization
+
+Confirm the OpenShift Virtualization Operator is installed:
+
+[source,bash,role=execute]
+----
+oc get csv -n openshift-cnv | grep kubevirt
+----
+
+Verify the HyperConverged CR is healthy:
+
+[source,bash,role=execute]
+----
+oc get hyperconverged kubevirt-hyperconverged -n openshift-cnv -o jsonpath='{.status.conditions[?(@.type=="Available")].status}'
+----
+
+The output should be `True`.
+
+== Step 2: Examine the Virt RWX StorageClass
+
+Inspect the block-RWX StorageClass created for VM disks:
+
+[source,bash,role=execute]
+----
+oc get sc linbit-rwx-virt -o yaml
+----
+
+Key parameters to note:
+
+* `accessModes: ReadWriteMany` (block)
+* `allowRemoteVolumeAccess: "true"` or LINSTOR `allow-two-primaries` property
+* `volumeMode: Block`
+
+== Step 3: Examine the Pre-Created VM
+
+Inspect the VirtualMachine resource:
+
+[source,bash,role=execute]
+----
+oc get vm -n {workshop_namespace}
+----
+
+View the VM's disk PVC:
+
+[source,bash,role=execute]
+----
+oc get pvc -n {workshop_namespace} -l vm.kubevirt.io/name
+----
+
+Check which node the VM instance (VMI) is currently running on:
+
+[source,bash,role=execute]
+----
+oc get vmi -n {workshop_namespace} -o wide
+----
+
+== Step 4: Start the VM (If Not Running)
+
+If the VM is not already running, start it:
+
+[source,bash,role=execute]
+----
+virtctl start sample-vm -n {workshop_namespace}
+----
+
+Wait for the VMI to reach `Running`:
+
+[source,bash,role=execute]
+----
+oc wait --for=jsonpath='{.status.phase}'=Running vmi/sample-vm -n {workshop_namespace} --timeout=120s
+----
+
+== Step 5: Check DRBD State Before Migration
+
+View the DRBD resource backing the VM disk:
+
+[source,bash,role=execute]
+----
+oc exec -n {linbit_namespace} deploy/linstor-controller -- linstor resource list
+----
+
+Note which node shows `InUse` -- this is the current VM host.
+
+== Step 6: Trigger Live Migration
+
+Initiate a live migration:
+
+[source,bash,role=execute]
+----
+virtctl migrate sample-vm -n {workshop_namespace}
+----
+
+Watch the migration progress:
+
+[source,bash,role=execute]
+----
+oc get vmim -n {workshop_namespace} -w
+----
+
+Press `Ctrl+C` once the migration shows `Succeeded`.
+
+== Step 7: Observe Dual-Primary Window
+
+During migration, DRBD briefly runs in dual-primary mode.
+After migration completes, verify the new node is the sole `InUse` holder:
+
+[source,bash,role=execute]
+----
+oc exec -n {linbit_namespace} deploy/linstor-controller -- linstor resource list
+----
+
+Confirm the VMI is now on a different node:
+
+[source,bash,role=execute]
+----
+oc get vmi -n {workshop_namespace} -o wide
+----
+
+== Step 8: Verify No Downtime
+
+If you had a console session open to the VM, verify it remained connected throughout the migration.
+You can also check the VM uptime:
+
+[source,bash,role=execute]
+----
+virtctl console sample-vm -n {workshop_namespace}
+----
+
+Inside the VM, run `uptime` to confirm no reboot occurred.
+Press `Ctrl+]` to exit the console.
+
+== Step 9: Label Gate Verification
+
+The label gate prevents non-VM pods from using block RWX volumes.
+Attempt to create a regular pod using the Virt RWX class:
+
+[source,bash,role=execute]
+----
+cat <<'EOF' | oc apply -f -
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test-rwx-pod
+  namespace: {workshop_namespace}
+spec:
+  containers:
+    - name: test
+      image: registry.access.redhat.com/ubi9/ubi-minimal:latest
+      command: ["sleep", "3600"]
+      volumeDevices:
+        - name: data
+          devicePath: /dev/xvda
+  volumes:
+    - name: data
+      persistentVolumeClaim:
+        claimName: test-rwx-block
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: test-rwx-block
+  namespace: {workshop_namespace}
+spec:
+  accessModes:
+    - ReadWriteMany
+  volumeMode: Block
+  storageClassName: linbit-rwx-virt
+  resources:
+    requests:
+      storage: 1Gi
+EOF
+----
+
+Observe the behavior -- without the `vm.kubevirt.io/name` label, the dual-primary mode will not activate, and scheduling may fail.
+
+Clean up the test:
+
+[source,bash,role=execute]
+----
+oc delete pod test-rwx-pod -n {workshop_namespace} --ignore-not-found
+oc delete pvc test-rwx-block -n {workshop_namespace} --ignore-not-found
+----
+
+== Summary
+
+In this module you:
+
+* Confirmed OpenShift Virtualization and the Virt RWX StorageClass are configured
+* Performed a live migration of a running VM using `virtctl migrate`
+* Observed the DRBD dual-primary window during migration
+* Verified zero-downtime migration with no VM reboot
+* Tested the label gate that restricts dual-primary mode to VirtualMachine workloads
+
+xref:module-04.adoc[Next: Module 4 -- Resilience Under Failure ->]

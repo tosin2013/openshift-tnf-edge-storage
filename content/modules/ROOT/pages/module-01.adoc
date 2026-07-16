@@ -1,0 +1,171 @@
+= Module 1: Storage Foundations
+:navtitle: 1. Storage Foundations
+
+[sidebar]
+****
+*Duration:* 30 minutes +
+*Objective:* Understand LINSTOR/DRBD architecture and verify the storage layer on your cluster.
+****
+
+== Introduction
+
+LINBIT SDS separates the *control plane* (LINSTOR Controller) from the *data plane* (DRBD kernel module running on each satellite node).
+The Controller manages resource definitions, storage pools, and scheduling.
+DRBD handles block-level replication with in-kernel efficiency -- no userspace I/O overhead.
+
+In this module you will explore a running LINSTOR deployment and understand how storage pools, diskful replicas, and diskless tiebreakers map to your cluster topology.
+
+== Step 1: Verify LINSTOR Pods
+
+Confirm the LINSTOR Operator and its components are running:
+
+[source,bash,role=execute]
+----
+oc get pods -n {linbit_namespace}
+----
+
+You should see pods for:
+
+* `linstor-controller` -- the control-plane manager
+* `linstor-csi-*` -- the CSI driver (controller + node DaemonSet)
+* `linstor-satellite-*` -- one per schedulable node, running the DRBD data plane
+
+== Step 2: List LINSTOR Nodes
+
+Use the LINSTOR CLI to list registered nodes:
+
+[source,bash,role=execute]
+----
+oc exec -n {linbit_namespace} deploy/linstor-controller -- linstor node list
+----
+
+Each node shows its type:
+
+* *SATELLITE* -- runs DRBD, hosts diskful or diskless resources
+* *CONTROLLER* -- manages the LINSTOR state (may share a satellite role)
+
+== Step 3: Inspect Storage Pools
+
+View the storage pools that back DRBD volumes:
+
+[source,bash,role=execute]
+----
+oc exec -n {linbit_namespace} deploy/linstor-controller -- linstor storage-pool list
+----
+
+[tabs]
+====
+AWS (TNA / Compact)::
++
+You should see EBS-backed LVM pools on each primary node.
+The arbiter node (if present) shows a *DfltDisklessStorPool* -- it contributes to DRBD quorum without storing data.
+
+KVM / Bare Metal (TNF)::
++
+You should see LVM pools backed by local or virtio disks on both nodes.
+There is no diskless tiebreaker; instead, fencing (STONITH) resolves split-brain.
+====
+
+== Step 4: Examine StorageClasses
+
+Review the pre-created StorageClasses:
+
+[source,bash,role=execute]
+----
+oc get sc
+----
+
+You should find at least two LINSTOR-backed classes:
+
+[cols="1,2,1"]
+|===
+| StorageClass | Purpose | Binding Mode
+
+| `linbit-rwo-locality`
+| Topology-aware RWO for databases -- pod and primary replica land on the same node
+| `WaitForFirstConsumer`
+
+| `linbit-rwx-virt`
+| Block RWX for VM live migration with `allow-two-primaries`
+| `Immediate`
+|===
+
+Inspect the parameters on the locality class:
+
+[source,bash,role=execute]
+----
+oc get sc linbit-rwo-locality -o yaml
+----
+
+Note the `volumeBindingMode: WaitForFirstConsumer` and the LINSTOR parameters for replica placement.
+
+== Step 5: Create a Test PVC
+
+Provision a test volume to see the LINSTOR provisioning cycle:
+
+[source,bash,role=execute]
+----
+cat <<'EOF' | oc apply -f -
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: test-linstor-pvc
+  namespace: {workshop_namespace}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: linbit-rwo-locality
+  resources:
+    requests:
+      storage: 1Gi
+EOF
+----
+
+Watch the PVC bind:
+
+[source,bash,role=execute]
+----
+oc get pvc test-linstor-pvc -n {workshop_namespace} -w
+----
+
+Press `Ctrl+C` once the PVC shows `Bound`.
+
+== Step 6: Inspect the DRBD Resource
+
+View the DRBD resource that LINSTOR created for the PVC:
+
+[source,bash,role=execute]
+----
+oc exec -n {linbit_namespace} deploy/linstor-controller -- linstor resource list
+----
+
+Identify which nodes hold *diskful* replicas (InUse or UpToDate) and which are *diskless* (TieBreaker or DisklessClient).
+
+== Step 7: Clean Up
+
+Delete the test PVC:
+
+[source,bash,role=execute]
+----
+oc delete pvc test-linstor-pvc -n {workshop_namespace}
+----
+
+Verify the LINSTOR resource was cleaned up:
+
+[source,bash,role=execute]
+----
+oc exec -n {linbit_namespace} deploy/linstor-controller -- linstor resource list
+----
+
+== Summary
+
+In this module you:
+
+* Verified the LINSTOR control plane (Controller) and data plane (Satellites) are healthy
+* Identified storage pool types matching your cluster topology
+* Examined pre-configured StorageClasses for RWO locality and RWX block modes
+* Created and deleted a test PVC to observe the LINSTOR/DRBD provisioning cycle
+
+You can now describe the control-plane vs data-plane architecture and identify where replicas reside.
+
+xref:module-02.adoc[Next: Module 2 -- Database Locality and Performance ->]

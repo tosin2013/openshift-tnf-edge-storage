@@ -1,0 +1,205 @@
+= Module 2: Database Locality and Performance
+:navtitle: 2. Database Performance
+
+[sidebar]
+****
+*Duration:* 45 minutes +
+*Objective:* Demonstrate how `WaitForFirstConsumer` guarantees data locality and how DRBD delivers near-bare-metal read performance.
+****
+
+== Introduction
+
+Traditional CSI drivers bind a PVC as soon as it is created, which can place the data volume on a different node than the pod.
+LINSTOR's `WaitForFirstConsumer` binding mode delays provisioning until the pod is scheduled, ensuring the primary DRBD replica lives on the *same node* as the consumer.
+Reads go directly to local block storage -- no network hop.
+
+In this module you will benchmark a pre-deployed PostgreSQL instance to measure local-read performance, then compare it against a 3-way replication topology.
+
+== Step 1: Examine the PostgreSQL Deployment
+
+Inspect the pre-deployed database StatefulSet:
+
+[source,bash,role=execute]
+----
+oc get statefulset -n {workshop_namespace}
+----
+
+[source,bash,role=execute]
+----
+oc get pods -n {workshop_namespace} -l app=sample-db -o wide
+----
+
+Note the node where the database pod is running.
+
+== Step 2: Verify Data Locality
+
+Confirm the PVC is bound to the same node as the pod:
+
+[source,bash,role=execute]
+----
+oc get pvc -n {workshop_namespace} -l app=sample-db
+----
+
+Now check the LINSTOR resource to confirm the primary (diskful, InUse) replica is on the same node:
+
+[source,bash,role=execute]
+----
+oc exec -n {linbit_namespace} deploy/linstor-controller -- linstor resource list
+----
+
+The pod's node and the `InUse` diskful replica should match.
+This is the `WaitForFirstConsumer` mechanism in action.
+
+== Step 3: Run a Baseline Benchmark
+
+Initialize pgbench inside the database pod:
+
+[source,bash,role=execute]
+----
+oc exec -n {workshop_namespace} deploy/sample-db -- pgbench -i -s 10 workshop
+----
+
+Run a read-heavy benchmark (select-only mode):
+
+[source,bash,role=execute]
+----
+oc exec -n {workshop_namespace} deploy/sample-db -- pgbench -S -c 4 -j 2 -T 30 workshop
+----
+
+Record the *TPS (transactions per second)* and *average latency* values.
+
+== Step 4: Run a Mixed Read/Write Benchmark
+
+Run the default pgbench workload (mixed reads and writes):
+
+[source,bash,role=execute]
+----
+oc exec -n {workshop_namespace} deploy/sample-db -- pgbench -c 4 -j 2 -T 30 workshop
+----
+
+Compare to the read-only results:
+
+* *Reads* are served from local disk -- expect low latency
+* *Writes* must replicate to the remote peer over the network -- expect higher latency
+
+This difference demonstrates DRBD's synchronous replication cost and why `WaitForFirstConsumer` matters for read-heavy workloads.
+
+== Step 5: Create a 3-Way Replication StorageClass
+
+Define a new StorageClass with three replicas:
+
+[source,bash,role=execute]
+----
+cat <<'EOF' | oc apply -f -
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: linbit-rwo-3way
+provisioner: linstor.csi.linbit.com
+parameters:
+  autoPlace: "3"
+  storagePool: lvm-thin
+  csi.storage.k8s.io/fstype: xfs
+volumeBindingMode: WaitForFirstConsumer
+reclaimPolicy: Delete
+allowVolumeExpansion: true
+EOF
+----
+
+== Step 6: Deploy a Second Database Instance
+
+Create a second PostgreSQL instance using the 3-way class:
+
+[source,bash,role=execute]
+----
+cat <<'EOF' | oc apply -f -
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: sample-db-3way
+  namespace: {workshop_namespace}
+  labels:
+    app: sample-db-3way
+spec:
+  serviceName: sample-db-3way
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sample-db-3way
+  template:
+    metadata:
+      labels:
+        app: sample-db-3way
+    spec:
+      containers:
+        - name: postgres
+          image: registry.redhat.io/rhel9/postgresql-15:latest
+          env:
+            - name: POSTGRESQL_USER
+              value: demo
+            - name: POSTGRESQL_PASSWORD
+              value: demo
+            - name: POSTGRESQL_DATABASE
+              value: workshop
+          ports:
+            - containerPort: 5432
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/pgsql/data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: linbit-rwo-3way
+        resources:
+          requests:
+            storage: 10Gi
+EOF
+----
+
+Wait for the pod to become ready:
+
+[source,bash,role=execute]
+----
+oc wait --for=condition=ready pod -l app=sample-db-3way -n {workshop_namespace} --timeout=120s
+----
+
+== Step 7: Benchmark 3-Way Replication
+
+Initialize and benchmark the second instance:
+
+[source,bash,role=execute]
+----
+oc exec -n {workshop_namespace} statefulset/sample-db-3way -- pgbench -i -s 10 workshop
+----
+
+[source,bash,role=execute]
+----
+oc exec -n {workshop_namespace} statefulset/sample-db-3way -- pgbench -c 4 -j 2 -T 30 workshop
+----
+
+Compare results against the 2-way baseline.
+With 3-way replication, writes must wait for two remote acknowledgments instead of one.
+
+== Step 8: Clean Up
+
+Remove the test resources:
+
+[source,bash,role=execute]
+----
+oc delete statefulset sample-db-3way -n {workshop_namespace}
+oc delete pvc data-sample-db-3way-0 -n {workshop_namespace}
+oc delete sc linbit-rwo-3way
+----
+
+== Summary
+
+In this module you:
+
+* Verified that `WaitForFirstConsumer` co-locates the pod and primary DRBD replica
+* Measured local-read performance with pgbench (select-only) -- near-bare-metal latency
+* Observed synchronous replication cost on writes (2-way vs 3-way)
+* Understood why topology-aware scheduling is critical for database workloads at the edge
+
+xref:module-03.adoc[Next: Module 3 -- VM Live Migration ->]

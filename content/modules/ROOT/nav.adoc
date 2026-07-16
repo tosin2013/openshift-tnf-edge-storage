@@ -1,0 +1,8 @@
+* xref:index.adoc[Workshop Overview]
+
+.Lab Modules
+* xref:module-01.adoc[1. Storage Foundations]
+* xref:module-02.adoc[2. Database Performance]
+* xref:module-03.adoc[3. VM Live Migration]
+* xref:module-04.adoc[4. Resilience Under Failure]
+* xref:module-05.adoc[5. Disaster Recovery]
