@@ -233,12 +233,16 @@ quota_checks:
       aws service-quotas get-service-quota
         --service-code ec2 --quota-code L-1216C47A
         --region ${aws_region}
-        --query 'Quota.Value' --output text
+        --query 'Quota.Value' --output json |
+        python3 -c "import sys,json; v=json.load(sys.stdin); print(int(v) if v else 0)"
     usage_command: >-
       aws ec2 describe-instances
         --region ${aws_region}
         --filters Name=instance-state-name,Values=running
-        --query 'sum(Reservations[].Instances[].CpuOptions.CoreCount) * 2' --output text
+        --output json |
+        python3 -c "import sys,json; d=json.load(sys.stdin);
+        print(sum(i.get('CpuOptions',{}).get('CoreCount',0)*2
+        for r in d.get('Reservations',[]) for i in r.get('Instances',[])))"
     fail_message: >-
       Request a vCPU limit increase at
       https://console.aws.amazon.com/servicequotas/
@@ -249,11 +253,13 @@ quota_checks:
       aws service-quotas get-service-quota
         --service-code ec2 --quota-code L-0263D0A3
         --region ${aws_region}
-        --query 'Quota.Value' --output text
+        --query 'Quota.Value' --output json |
+        python3 -c "import sys,json; v=json.load(sys.stdin); print(int(v) if v else 0)"
     usage_command: >-
       aws ec2 describe-addresses
         --region ${aws_region}
-        --query 'Addresses | length(@)' --output text
+        --output json |
+        python3 -c "import sys,json; print(len(json.load(sys.stdin).get('Addresses',[])))"
     fail_message: "Release unused Elastic IPs or request a limit increase."
 
   - label: "VPCs"
@@ -262,11 +268,13 @@ quota_checks:
       aws service-quotas get-service-quota
         --service-code vpc --quota-code L-F678F1CE
         --region ${aws_region}
-        --query 'Quota.Value' --output text
+        --query 'Quota.Value' --output json |
+        python3 -c "import sys,json; v=json.load(sys.stdin); print(int(v) if v else 0)"
     usage_command: >-
       aws ec2 describe-vpcs
         --region ${aws_region}
-        --query 'Vpcs | length(@)' --output text
+        --output json |
+        python3 -c "import sys,json; print(len(json.load(sys.stdin).get('Vpcs',[])))"
     fail_message: "Delete unused VPCs or request a limit increase."
 
 # ─────────────────────────────────────────────────────────────
