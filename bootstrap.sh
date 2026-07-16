@@ -569,6 +569,49 @@ show_post_setup() {
     substitute_vars "$message"
 }
 
+# ─── Load Defaults (for --check-only and --non-interactive) ──────────────────
+
+load_defaults() {
+    local config_file
+    config_file="$(manifest_get ".config.output_file")"
+
+    # If a config file already exists, read values from it
+    if [[ -n "$config_file" && -f "$config_file" ]]; then
+        while IFS=': ' read -r key value; do
+            key=$(echo "$key" | tr -d ' ')
+            value=$(echo "$value" | tr -d '"' | tr -d "'")
+            [[ "$key" =~ ^#.*$ || -z "$key" ]] && continue
+            VARS["$key"]="$value"
+        done < "$config_file"
+        info "Loaded config from: ${config_file}"
+        return
+    fi
+
+    # Otherwise populate VARS with manifest defaults
+    local count i key default_val
+    count="$(manifest_len ".config.prompts")"
+    for (( i=0; i<count; i++ )); do
+        key="$(manifest_get ".config.prompts[$i].key")"
+        default_val="$(manifest_get ".config.prompts[$i].default")"
+        if [[ -n "$key" && -z "${VARS[$key]+_}" ]]; then
+            VARS["$key"]="${default_val:-}"
+        fi
+    done
+
+    # Also load setup_step prompt defaults
+    count="$(manifest_len ".setup_steps")"
+    for (( i=0; i<count; i++ )); do
+        key="$(manifest_get ".setup_steps[$i].prompt_var")"
+        default_val="$(manifest_get ".setup_steps[$i].default")"
+        if [[ -n "$key" && -z "${VARS[$key]+_}" ]]; then
+            local expanded="${default_val/#\~/$HOME}"
+            VARS["$key"]="$expanded"
+        fi
+    done
+
+    info "Using manifest defaults (no config file found)"
+}
+
 # ─── Main ────────────────────────────────────────────────────────────────────
 
 main() {
@@ -587,6 +630,7 @@ main() {
     info "Manifest: ${MANIFEST}"
 
     if [[ "$CHECK_ONLY" == "true" ]]; then
+        load_defaults
         local rc=0
         validate || rc=1
         run_quota_checks || rc=1
