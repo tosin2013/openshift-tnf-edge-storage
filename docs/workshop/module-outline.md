@@ -1,130 +1,208 @@
 # Workshop Module Outline
 
-**Audience:** Solutions Architects / platform engineers  
-**Platform:** OpenShift **4.22+** with LINBIT SDS  
-**Tracks:** A = AWS + AgnosticD (TNA/Compact); B = KVM/bare metal TNF via agent-install  
+**Deliverable:** Showroom-based hands-on lab on a pre-provisioned OpenShift 4.22+ cluster.
+**Audience:** Solutions Architects / platform engineers.
+**Format:** Students follow guided Showroom AsciiDoc modules. The Helm chart pre-deploys all lab infrastructure via ArgoCD so students focus on exercises, not installation.
 
-Shared LINBIT + Showroom content; Module 0 and Module 3 differ by track.
+## Deployment layers
 
-## Learning outcomes
+Cluster provisioning is **outside** this repository. This repo is a field-sourced-content Helm chart that ArgoCD applies **after** the cluster exists.
 
-Participants will be able to:
+```mermaid
+flowchart TB
+  subgraph outside [Outside This Repo]
+    AgnosticD["AgnosticD (default: AWS TNA/Compact)"]
+    AgentInstall["agent-install (optional advanced: KVM TNF)"]
+  end
+  subgraph inside [This Repo: Field Content Helm Chart]
+    ArgoCD[ArgoCD Application]
+    subgraph helm [Helm Components]
+      LinstorOp[components/linstor-operator/]
+      SC[components/storageclasses/]
+      SampleDB[components/sample-database/]
+      SampleVM[components/sample-vm/]
+      MinIOComp[components/minio/]
+      ShowroomDeploy[components/showroom/]
+    end
+  end
+  subgraph showroom [Showroom Lab Modules]
+    M1[Module 1: Storage Foundations]
+    M2[Module 2: Database Performance]
+    M3[Module 3: VM Live Migration]
+    M4[Module 4: Resilience Drill]
+    M5[Module 5: Disaster Recovery]
+  end
+  AgnosticD --> ArgoCD
+  AgentInstall -.->|optional| ArgoCD
+  ArgoCD --> helm
+  ShowroomDeploy --> showroom
+```
 
-1. Explain LINSTOR/DRBD control vs data plane separation and when to choose LINBIT over ODF at the edge  
-2. Deploy topology-appropriate OpenShift (TNA/Compact or TNF) and install the certified LINSTOR Operator  
-3. Demonstrate database locality, Virt live migration, resilience under partition, and S3 incremental snapshot DR  
+| Layer | Responsibility | Where |
+|-------|---------------|-------|
+| Cluster provisioning | AWS EC2 + OCP 4.22+ install, EBS volumes, networking | AgnosticD (default) or agent-install (advanced) |
+| Lab infrastructure | LINSTOR Operator, StorageClasses, sample workloads, Showroom | This Helm chart via ArgoCD |
+| Student experience | Guided hands-on exercises | Showroom AsciiDoc pages |
 
-## Module map
+**Default path:** RHDP catalog orders AgnosticD AWS (TNA or Compact). AgnosticD calls `ocp4_workload_field_content` with `ocp4_workload_field_content_gitops_repo_url` pointing at this repo. ArgoCD deploys the chart. Student opens Showroom and starts Module 1.
 
-| Module | Lab focus | Track A (AWS) | Track B (TNF) |
-|--------|-----------|---------------|---------------|
-| **0** | Cluster + LINBIT Operator | AgnosticD provision → Field Content Helm | agent-install ABI → same Helm |
-| **1** | StorageClasses + DB locality | WaitForFirstConsumer + fio/pgbench on EBS-backed pools | Same labs on local/virtio pools |
-| **2** | OpenShift Virtualization block RWX | Live migrate VM (`allow-two-primaries`) | Same |
-| **3** | Edge / minimal resilience | Arbiter + diskless tiebreaker partition drill | **TNF fencing** via sushy/BMC STONITH |
-| **4** | S3 snapshot shipping | AWS S3 remote + incremental deltas | MinIO or external S3 |
-| **5** (stretch) | Federated `externalController` migration | Optional advanced | Optional advanced |
+**Advanced path (optional):** User brings up OCP 4.22+ TNF cluster on KVM/bare metal via [openshift-agent-install](https://github.com/tosin2013/openshift-agent-install), then applies this chart manually or via ArgoCD. Same Showroom modules, different cluster topology.
 
-## Module 0 — Foundations
+## Helm components
 
-**Duration (guide):** 45–60 min  
+One chart with toggleable components. Two values overlays: `values.yaml` (AWS defaults) and `values-tnf.yaml` (KVM/TNF overrides).
 
-### Objectives
+| Component | Path | Purpose | `values.yaml` (AWS) | `values-tnf.yaml` |
+|-----------|------|---------|----------------------|---------------------|
+| linstor-operator | `components/linstor-operator/` | OLM Subscription, `LinstorCluster` CR, `LinstorSatelliteConfiguration` for EBS or local disks | enabled | enabled |
+| storageclasses | `components/storageclasses/` | RWO locality class (`WaitForFirstConsumer`), Virt block-RWX class (`allow-two-primaries`) | enabled | enabled |
+| sample-database | `components/sample-database/` | PostgreSQL StatefulSet on LINSTOR RWO class for Module 2 benchmarks | enabled | enabled |
+| sample-vm | `components/sample-vm/` | VM disk PVC (block mode) for Module 3 live migration | enabled | enabled |
+| minio | `components/minio/` | S3-compatible endpoint for DR snapshots when AWS S3 is unavailable | disabled | enabled |
+| showroom | `components/showroom/` | Showroom Deployment + AsciiDoc lab content | enabled | enabled |
 
-- Stand up the track-specific cluster on OCP 4.22+  
-- Install LINSTOR Operator; verify controller, satellites, CSI  
-- Create baseline LVMThin storage pool(s)  
+### RHDP integration labels
 
-### Track A steps
+```yaml
+# On the ArgoCD Application -- health monitoring
+metadata:
+  labels:
+    demo.redhat.com/application: "linbit-edge-storage"
 
-1. Order / run AgnosticD config for TNA or Compact  
-2. Confirm arbiter (if TNA) unschedulable for apps  
-3. Deploy Field Content from this repo  
-4. Attach EBS devices; apply satellite configuration  
+# On a ConfigMap -- data passback to RHDP catalog
+metadata:
+  labels:
+    demo.redhat.com/userinfo: ""
+data:
+  showroom_url: "https://showroom.apps.{{ .Values.cluster_domain }}"
+  sample_db_connection: "postgresql://demo:demo@sample-db.linbit-workshop.svc:5432/workshop"
+  msg: "LINBIT Edge Storage Workshop ready"
+```
 
-### Track B steps
+AgnosticD Pipeline A provides core cluster data (API URL, ingress domain, admin credentials). Pipeline B (the ConfigMap above) provides workload-specific data that only exists after ArgoCD deploys the chart.
 
-1. On IBM Cloud host: validate agent-install KVM env  
-2. Generate 4.22 agent ISO; deploy via KVM (sushy) or bare metal  
-3. Export kubeconfig; deploy same Field Content chart  
-4. Configure local disks for LINSTOR pools  
+## Showroom lab modules
 
-### Exit criteria
+Students work on an already-deployed cluster. Helm has pre-installed LINSTOR, StorageClasses, sample workloads, and Showroom. Each module is a Showroom AsciiDoc page with concrete terminal commands and verification steps.
 
-- `oc get nodes` healthy; LINSTOR pods Running  
-- At least one StorageClass can bind a test PVC  
+### Module 1 -- Storage Foundations (30 min)
 
-## Module 1 — High-performance databases
+**What students learn:** How LINSTOR/DRBD control and data planes are structured; what a storage pool, diskful replica, and diskless tiebreaker look like on a running cluster.
 
-**Duration:** 45 min  
+**Hands-on steps:**
 
-- Create StorageClass with `WaitForFirstConsumer` and 2-way replication  
-- Deploy sample database  
-- Run fio/pgbench; discuss local-read architecture  
-- Optional: compare r2 vs r3 classes  
+1. Verify LINSTOR pods are running: `oc get pods -n linbit-sds`
+2. Inspect satellites and storage pools: `linstor node list`, `linstor storage-pool list`
+3. Examine the pre-created StorageClasses: `oc get sc` -- identify RWO locality and Virt RWX classes
+4. Create a test PVC; observe LINSTOR provision a DRBD resource: `linstor resource list`
+5. Identify diskful vs diskless resources (on AWS: diskless tiebreaker on arbiter; on TNF: two diskful peers)
+6. Delete the test PVC; confirm cleanup
 
-**Applies to:** A + B  
+**Exit criteria:** Student can describe control/data plane separation and point to where replicas live.
 
-## Module 2 — VMware exit / OpenShift Virtualization
+### Module 2 -- Database Locality and Performance (45 min)
 
-**Duration:** 60 min  
+**What students learn:** How `WaitForFirstConsumer` guarantees data locality; how in-kernel DRBD delivers near-bare-metal read IOPS.
 
-- Enable Virt operators if not preinstalled by AgnosticD/content  
-- StorageClass with `allow-two-primaries`  
-- Create VM disk PVC (block mode)  
-- Live-migrate; observe dual-primary window and label check  
+**Hands-on steps:**
 
-**Applies to:** A + B (requires enough RAM/CPU on both nodes)  
+1. Examine the pre-deployed PostgreSQL StatefulSet and its PVC
+2. Confirm PVC is bound to the same node as the pod: `oc get pvc -o wide`, `linstor resource list`
+3. Run `pgbench` inside the database pod to generate I/O load
+4. Observe read latency (local NVMe/EBS) vs write latency (network round-trip to replica)
+5. Create a second StorageClass with 3-way replication (`placementCount: 3`); deploy a second database instance
+6. Compare benchmark results between 2-way and 3-way replication
 
-## Module 3 — Resilience (track-specific)
+**Exit criteria:** Student has empirical latency numbers showing local-read advantage and can explain the `WaitForFirstConsumer` mechanism.
 
-**Duration:** 45–60 min  
+### Module 3 -- VMware Exit: VM Live Migration (45 min)
 
-### Track A — TNA / Compact
+**What students learn:** How block-level RWX via `allow-two-primaries` enables zero-downtime VM migration without NFS.
 
-- Identify diskful vs diskless (tiebreaker) resources  
-- Simulate primary failure or network isolation (safely)  
-- Show etcd + DRBD quorum behavior with arbiter/tiebreaker  
+**Hands-on steps:**
 
-### Track B — TNF fencing
+1. Confirm OpenShift Virtualization Operator is running
+2. Examine the pre-created VM disk PVC (block mode, Virt RWX StorageClass)
+3. Start the VM from the OpenShift console; verify it boots and is accessible
+4. Trigger live migration from the console (or `virtctl migrate`)
+5. Observe DRBD dual-primary window: both source and destination nodes hold the volume open
+6. Verify the `vm.kubevirt.io/name` label gate prevented non-VM pods from using block RWX
+7. Confirm VM is running on the destination node with no downtime
 
-- Review fencing credentials (sushy or BMC)  
-- Induce communication loss  
-- Observe STONITH / Redfish power action  
-- Confirm survivor resumes workloads and storage  
+**Exit criteria:** Student has performed a live migration and can explain the dual-primary safety model.
 
-## Module 4 — Geographic DR
+### Module 4 -- Resilience Under Failure (30 min)
 
-**Duration:** 45 min  
+**What students learn:** How DRBD quorum + cluster HA prevent data loss during node failure.
 
-- Create LINSTOR encryption passphrase secret  
-- Define S3 remote  
-- VolumeSnapshotClass → snapshot → verify incremental ship narrative  
-- Discuss restore-to-second-cluster story (demo restore if time)  
+**Hands-on steps (AWS default):**
 
-**Track A:** AWS S3  
-**Track B:** MinIO in-cluster or external S3-compatible endpoint  
+1. Identify the diskless tiebreaker resource on the arbiter node: `linstor resource list`
+2. Cordon or drain one primary node: `oc adm cordon <node>`
+3. Observe: etcd quorum holds (arbiter votes), DRBD volume stays quorate (diskful + diskless = 2/3 majority)
+4. Verify workloads reschedule to the surviving primary
+5. Uncordon the node; watch DRBD resync
+6. Discuss: this is the TNA model -- arbiter provides quorum cheaply without a third full data copy
 
-## Module 5 — Federated migration (optional)
+**Hands-on steps (TNF advanced -- optional Showroom page):**
 
-**Duration:** 60+ min  
+1. Review fencing credentials in the cluster (sushy URLs on KVM, BMC endpoints on bare metal)
+2. Block network between the two nodes (or use sushy API to power off one node)
+3. Observe Pacemaker trigger STONITH via Redfish
+4. Confirm the surviving node resumes all workloads and DRBD volumes
+5. Restore the fenced node; watch cluster reconverge
 
-- Expose controller on Cluster A  
-- Join Cluster B satellites via `externalController`  
-- Replicate, cut over PVC/workload, sever federation  
+**Exit criteria:** Student has seen a node failure and verified storage + workload continuity.
 
-Reserve for advanced audiences or day-2 workshop.
+### Module 5 -- Geographic Disaster Recovery (45 min)
 
-## SSA elevator pitch (close)
+**What students learn:** How LINSTOR ships crash-consistent snapshots to S3 with incremental block deltas.
 
-- Near-bare-metal reads via in-kernel DRBD + WaitForFirstConsumer  
-- Virt live migration with controlled dual-primary  
-- Edge standard: TNF + fencing where BMC exists; TNA + tiebreaker on AWS  
-- Tiny footprint vs Ceph at the edge  
-- Certified Operator + LVM/ZFS escape hatch  
+**Hands-on steps:**
 
-## Delivery packaging (later phase)
+1. Create a LINSTOR encryption passphrase: `linstor encryption create-passphrase`
+2. Define an S3 remote target (AWS S3 bucket on default track; pre-deployed MinIO on TNF)
+3. Create a `VolumeSnapshotClass` referencing the LINSTOR S3 remote
+4. Take a snapshot of the database PVC
+5. Write new data to the database; take a second snapshot
+6. Verify the second snapshot shipped only incremental deltas (discuss block-level efficiency)
+7. Discussion: restoring from S3 into a second cluster for full DR
 
-- Showroom AsciiDoc under Field Content `components/showroom/`  
-- Helm values toggles per module dependencies (Virt, MinIO, sample DB)  
-- RHDP labels for health and userinfo passback  
+**Exit criteria:** Student has taken incremental snapshots and understands the delta-only shipping model.
+
+## Advanced / optional content (not in core lab)
+
+| Content | Format | Notes |
+|---------|--------|-------|
+| TNF cluster bring-up | Separate linked guide | Points to [openshift-agent-install](https://github.com/tosin2013/openshift-agent-install); for users who want to run the lab on KVM/bare metal |
+| NFS RWX (Ganesha) | Optional Showroom page | LINSTOR Operator v2+ NFS server failover; not in core five modules |
+| Federated migration | Architecture doc only | `externalController` cross-cluster; stretch for day-2 workshop |
+
+## RHDP catalog and data flow
+
+```mermaid
+flowchart LR
+  Catalog[RHDP Catalog] -->|orders| AgnosticD
+  AgnosticD -->|provisions OCP 4.22+ AWS| Cluster
+  AgnosticD -->|"ocp4_workload_field_content"| ArgoCD
+  ArgoCD -->|deploys this Helm chart| HelmChart[Helm Components]
+  HelmChart -->|"demo.redhat.com/application"| HealthCheck[RHDP Health Monitoring]
+  HelmChart -->|"demo.redhat.com/userinfo ConfigMap"| DataPassback[RHDP Catalog Display]
+  DataPassback --> Student[Student sees: Showroom URL + credentials]
+```
+
+- **Catalog item:** "LINBIT Edge Storage Workshop" -- single entry, AWS TNA/Compact default
+- **Health tracking:** ArgoCD Application labeled `demo.redhat.com/application: "linbit-edge-storage"`
+- **Data passback:** ConfigMap labeled `demo.redhat.com/userinfo: ""` carries Showroom URL, API URL, sample-db connection string to RHDP catalog for student display
+- **Student access:** Showroom terminal + OpenShift web console via RHDP-provided credentials
+- **Showroom attributes:** `cluster_domain`, `api_url`, `admin_password` injected into Antora from AgnosticD userinfo (Pipeline A)
+
+## Learning outcomes (summary)
+
+By completing this lab, students will be able to:
+
+1. Describe LINSTOR/DRBD architecture and why it outperforms Ceph/ODF at the edge
+2. Configure and benchmark topology-aware StorageClasses for database locality
+3. Perform zero-downtime VM live migration using block-level RWX
+4. Demonstrate cluster resilience under node failure with DRBD quorum
+5. Execute incremental S3 snapshot shipping for geographic disaster recovery

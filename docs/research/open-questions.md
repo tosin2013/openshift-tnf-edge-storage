@@ -33,9 +33,9 @@ Resolve these before implementing Helm/Showroom YAML.
 
 | # | Question | Why it matters | Suggested next step |
 |---|----------|----------------|---------------------|
-| F1 | Helm-only Field Content CI vs custom AgnosticD role changes? | Scaffold shape | Start from field-sourced-content-template Helm |
-| F2 | One catalog item with track parameter vs two catalog items? | RHDP UX | Prefer two entries (AWS vs TNF) sharing one Git repo + value overlays |
-| F3 | Showroom antora attributes from AgnosticD userinfo for both tracks? | Student login URLs | Define ConfigMap keys early |
+| F1 | ~~Helm-only Field Content CI vs custom AgnosticD role changes?~~ | **RESOLVED:** Helm-only from field-sourced-content-template. Chart deploys LINSTOR Operator, StorageClasses, sample workloads, Showroom. AgnosticD wires it via `ocp4_workload_field_content`. | Done -- see module-outline.md |
+| F2 | ~~One catalog item with track parameter vs two catalog items?~~ | **RESOLVED:** Single RHDP catalog item "LINBIT Edge Storage Workshop" with AWS TNA/Compact as default. KVM/TNF is an optional advanced path using the same Helm chart with `values-tnf.yaml` overlay, not a separate catalog entry. | Done -- see module-outline.md |
+| F3 | Showroom antora attributes from AgnosticD userinfo for both tracks? | Student login URLs | Define ConfigMap keys early: `cluster_domain`, `api_url`, `admin_password` from Pipeline A; `showroom_url`, `sample_db_connection` from Pipeline B userinfo ConfigMap |
 
 ## Product / messaging
 
@@ -46,9 +46,10 @@ Resolve these before implementing Helm/Showroom YAML.
 
 ## Exit criteria to start Phase 2 scaffold
 
-- [ ] A1 answered with a concrete AgnosticD/RHDP path for 4.22+  
-- [ ] B1 proven or fallback compact ABI documented  
-- [ ] L1 Operator channel chosen  
-- [ ] F1/F2 decided (Helm overlays + catalog shape)  
+- [ ] A1 answered with a concrete AgnosticD/RHDP path for 4.22+
+- [ ] B1 proven or fallback compact ABI documented
+- [ ] L1 Operator channel chosen
+- [x] F1 decided: Helm-only from field-sourced-content-template
+- [x] F2 decided: single catalog item, AWS default, KVM/TNF optional via `values-tnf.yaml`
 
-Until then: keep publishing architecture/workshop research only (this phase).
+Until A1, B1, and L1 are answered: keep publishing architecture/workshop research only.
