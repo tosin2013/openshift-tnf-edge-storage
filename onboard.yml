@@ -244,8 +244,8 @@ quota_checks:
         print(sum(i.get('CpuOptions',{}).get('CoreCount',0)*2
         for r in d.get('Reservations',[]) for i in r.get('Instances',[])))"
     fail_message: >-
-      Request a vCPU limit increase at
-      https://console.aws.amazon.com/servicequotas/
+      Run: make request-quotas (or request manually at
+      https://console.aws.amazon.com/servicequotas/)
 
   - label: "Elastic IPs"
     needed: 3
@@ -260,7 +260,7 @@ quota_checks:
         --region ${aws_region}
         --output json |
         python3 -c "import sys,json; print(len(json.load(sys.stdin).get('Addresses',[])))"
-    fail_message: "Release unused Elastic IPs or request a limit increase."
+    fail_message: "Run: make request-quotas (or release unused EIPs manually)"
 
   - label: "VPCs"
     needed: 3
@@ -275,7 +275,7 @@ quota_checks:
         --region ${aws_region}
         --output json |
         python3 -c "import sys,json; print(len(json.load(sys.stdin).get('Vpcs',[])))"
-    fail_message: "Delete unused VPCs or request a limit increase."
+    fail_message: "Run: make request-quotas (or delete unused VPCs manually)"
 
 # ─────────────────────────────────────────────────────────────
 # Post-Setup Message

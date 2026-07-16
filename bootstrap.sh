@@ -565,7 +565,7 @@ run_quota_checks() {
     else
         local failed=$((total - passed))
         fail "Quota: ${passed}/${total} checks passed"
-        fail "BLOCKED: Insufficient quota. Fix the issues above before deploying."
+        fail "BLOCKED: Insufficient quota. Run: make request-quotas"
         return 1
     fi
 }

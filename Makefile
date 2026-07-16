@@ -1,4 +1,4 @@
-.PHONY: setup deploy teardown stop start status check
+.PHONY: setup deploy teardown stop start status check request-quotas
 
 setup:
 	@echo "Running project onboarding..."
@@ -21,3 +21,6 @@ status:
 
 check:
 	./bootstrap.sh --check-only
+
+request-quotas:
+	./agnosticd/request-quotas.sh
