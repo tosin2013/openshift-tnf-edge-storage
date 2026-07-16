@@ -214,7 +214,7 @@ validation:
       Edit secrets-${account}.yml and fill in your AWS credentials.
 
   - name: "Route53 hosted zone"
-    command: "aws route53 list-hosted-zones --query \"HostedZones[?Name=='${base_domain}.']\" --output text | grep -q HOSTED"
+    command: "aws route53 list-hosted-zones --query \"HostedZones[?Name=='${base_domain}.'].Id\" --output text | grep -q '/hostedzone/'"
     required: false
     fail_message: >-
       No Route53 hosted zone found for ${base_domain}.

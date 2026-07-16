@@ -13,6 +13,12 @@
 
 set -euo pipefail
 
+# ─── Ensure common tool paths are available ──────────────────────────────────
+
+for p in "$HOME/.local/bin" "/usr/local/bin" "$HOME/bin"; do
+    [[ -d "$p" ]] && [[ ":$PATH:" != *":$p:"* ]] && export PATH="$p:$PATH"
+done
+
 # ─── Colors ──────────────────────────────────────────────────────────────────
 
 if [[ -t 1 ]]; then
