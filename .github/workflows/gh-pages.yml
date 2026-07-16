@@ -40,9 +40,6 @@ jobs:
         run: >-
           sed -i 's|url: .*ui-bundle.zip|url: https://github.com/rhpds/rhdp_showroom_theme/releases/download/showroom-template/ui-bundle.zip|'
           site.yml
-      - name: inject lunr search extension
-        run: |
-          sed -i "/^output:/i\\ - require: '@antora/lunr-extension'\n   index_by_heading: true" site.yml
       - name: antora generate
         run: antora --fetch site.yml
       - name: upload pages artifact
