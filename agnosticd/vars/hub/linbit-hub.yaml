@@ -4,10 +4,16 @@
 # Runs RHACM + Showroom. No LINBIT workloads.
 # ===================================================================
 
+tag: main
+
 cloud_provider: aws
 config: openshift-cluster
 
 aws_region: us-east-2
+
+# AWS sandbox: use RHUI on RHEL AMIs; do not register to Satellite
+install_satellite_repositories: false
+install_rhn_repositories: false
 
 cloud_tags:
   - owner: tosin@redhat.com
@@ -22,6 +28,15 @@ bastion_setup_student_user: true
 bastion_student_user_name: lab-user
 
 # ===================================================================
+# Collections (V2 — installs rhpds/core_workloads for FQCN roles)
+# ===================================================================
+requirements_content:
+  collections:
+    - name: https://github.com/rhpds/core_workloads.git
+      type: git
+      version: "{{ tag }}"
+
+# ===================================================================
 # OpenShift Settings - HA Hub (3 CP + 2 Workers)
 # ===================================================================
 cluster_name: linbit-hub
@@ -33,18 +48,18 @@ host_ocp4_installer_set_user_data_kubeadmin_password: true
 subdomain_base_suffix: .sandbox2530.opentlc.com
 
 # ===================================================================
-# Infra Workloads (deployed on the hub)
+# Workloads (deployed on the hub) — V2 uses workloads, not infra_workloads
 # ===================================================================
-infra_workloads:
-  - ocp4_workload_cert_manager
-  - ocp4_workload_authentication
-  - ocp4_workload_rhacm
-  - ocp4_workload_showroom
+workloads:
+  - agnosticd.core_workloads.ocp4_workload_cert_manager
+  - agnosticd.core_workloads.ocp4_workload_authentication_htpasswd
+  - agnosticd.core_workloads.ocp4_workload_rhacm
+  - agnosticd.core_workloads.ocp4_workload_showroom
 
 # ===================================================================
 # Workload: ocp4_workload_cert_manager
 # ===================================================================
-ocp4_workload_cert_manager_channel: stable-v1.15
+ocp4_workload_cert_manager_channel: stable-v1
 ocp4_workload_cert_manager_aws_region: "{{ aws_region }}"
 ocp4_workload_cert_manager_aws_access_key_id: "{{ hostvars.localhost.route53user_access_key }}"
 ocp4_workload_cert_manager_aws_secret_access_key: "{{ hostvars.localhost.route53user_secret_access_key }}"
@@ -53,23 +68,23 @@ ocp4_workload_cert_manager_install_ingress_certificates: true
 ocp4_workload_cert_manager_install_api_certificates: false
 
 # ===================================================================
-# Workload: ocp4_workload_authentication (htpasswd for admin)
+# Workload: ocp4_workload_authentication_htpasswd
 # ===================================================================
-ocp4_workload_authentication_provider: htpasswd
-ocp4_workload_authentication_admin_username: admin
-ocp4_workload_authentication_remove_kubeadmin: false
+ocp4_workload_authentication_htpasswd_admin_user: admin
+ocp4_workload_authentication_htpasswd_remove_kubeadmin: false
 
 # ===================================================================
-# Workload: ocp4_workload_rhacm
+# Workload: ocp4_workload_rhacm (core_workloads)
+# Cluster defaultChannel is release-2.17 (2.14 is not available).
 # ===================================================================
-ocp4_workload_rhacm_version: "2.17"
-ocp4_workload_rhacm_availability: High
-ocp4_workload_rhacm_enable_cluster_backup: false
+ocp4_workload_rhacm_acm_channel: release-2.17
+ocp4_workload_rhacm_automatic_install_plan_approval: true
 
 # ===================================================================
 # Workload: ocp4_workload_showroom
 # ===================================================================
 ocp4_workload_showroom_content_git_repo: "https://github.com/tosin2013/openshift-tnf-edge-storage.git"
 ocp4_workload_showroom_content_git_repo_ref: main
+ocp4_workload_showroom_content_antora_playbook: site.yml
 ocp4_workload_showroom_terminal_type: showroom
 ocp4_workload_showroom_terminal_image: "quay.io/rhpds/openshift-showroom-terminal-ocp:latest"
