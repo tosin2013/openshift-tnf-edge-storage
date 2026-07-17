@@ -5,10 +5,16 @@
 # One cluster per student, deployed via Field Content Helm chart.
 # ===================================================================
 
+tag: main
+
 cloud_provider: aws
 config: openshift-cluster
 
 aws_region: us-east-2
+
+# AWS sandbox: use RHUI on RHEL AMIs; do not register to Satellite
+install_satellite_repositories: false
+install_rhn_repositories: false
 
 cloud_tags:
   - owner: tosin@redhat.com
@@ -21,6 +27,15 @@ host_ssh_authorized_keys:
 
 bastion_setup_student_user: true
 bastion_student_user_name: lab-user
+
+# ===================================================================
+# Collections (V2 — installs rhpds/core_workloads for FQCN roles)
+# ===================================================================
+requirements_content:
+  collections:
+    - name: https://github.com/rhpds/core_workloads.git
+      type: git
+      version: "{{ tag }}"
 
 # ===================================================================
 # OpenShift Settings - TNA (2 primary workers + 1 arbiter)
@@ -37,14 +52,15 @@ subdomain_base_suffix: .sandbox2530.opentlc.com
 # Workloads (deployed on student clusters)
 # ===================================================================
 workloads:
-  - ocp4_workload_cert_manager
-  - ocp4_workload_field_content
-  - ocp4_workload_rhacm_import
+  - agnosticd.core_workloads.ocp4_workload_cert_manager
+  - agnosticd.core_workloads.ocp4_workload_openshift_gitops
+  - agnosticd.core_workloads.ocp4_workload_field_content
+  - ocp4_workload_rhacm_import   # local role in agnosticd-v2/ansible/roles
 
 # ===================================================================
 # Workload: ocp4_workload_cert_manager
 # ===================================================================
-ocp4_workload_cert_manager_channel: stable-v1.15
+ocp4_workload_cert_manager_channel: stable-v1
 ocp4_workload_cert_manager_aws_region: "{{ aws_region }}"
 ocp4_workload_cert_manager_aws_access_key_id: "{{ hostvars.localhost.route53user_access_key }}"
 ocp4_workload_cert_manager_aws_secret_access_key: "{{ hostvars.localhost.route53user_secret_access_key }}"
@@ -53,12 +69,29 @@ ocp4_workload_cert_manager_install_ingress_certificates: true
 ocp4_workload_cert_manager_install_api_certificates: false
 
 # ===================================================================
+# Workload: ocp4_workload_openshift_gitops (required by field_content)
+# ===================================================================
+ocp4_workload_openshift_gitops_channel: latest
+ocp4_workload_openshift_gitops_setup_cluster_admin: true
+ocp4_workload_openshift_gitops_enable_route: true
+
+# ===================================================================
 # Workload: ocp4_workload_field_content
 # Deploys the LINBIT Helm chart via ArgoCD
+# Registry creds come from AgnosticD secrets (linbit_registry_*).
 # ===================================================================
 ocp4_workload_field_content_gitops_repo_url: "https://github.com/tosin2013/openshift-tnf-edge-storage.git"
 ocp4_workload_field_content_gitops_repo_path: "helm"
 ocp4_workload_field_content_namespace: openshift-gitops
+ocp4_workload_field_content_helm_values:
+  components:
+    linstorOperator:
+      registrySecret:
+        create: true
+        name: drbdiocred
+        server: drbd.io
+        username: "{{ linbit_registry_username | default('') }}"
+        password: "{{ linbit_registry_password | default('') }}"
 
 # ===================================================================
 # Workload: ocp4_workload_rhacm_import

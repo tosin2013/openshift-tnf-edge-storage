@@ -24,15 +24,16 @@ STATE_DIR="${SCRIPT_DIR}/.state"
 MANIFEST="${STATE_DIR}/students.txt"
 
 # Ensure symlinks exist
-ln -sf "$SCRIPT_DIR/vars/hub/linbit-hub.yaml" "$AGNOSTICD_VARS/linbit-hub.yml"
-ln -sf "$SCRIPT_DIR/vars/student/linbit-student.yaml" "$AGNOSTICD_VARS/linbit-student.yml"
+# Copy, not symlink — EE containers cannot follow host symlinks
+cp "$SCRIPT_DIR/vars/hub/linbit-hub.yaml" "$AGNOSTICD_VARS/linbit-hub.yml"
+cp "$SCRIPT_DIR/vars/student/linbit-student.yaml" "$AGNOSTICD_VARS/linbit-student.yml"
 
 cd "$AGNOSTICD_ROOT"
 
 # Start hub first (RHACM + Showroom must be up before students reconnect)
 if [[ "$START_HUB" == "true" ]]; then
   echo "==> Starting hub ($HUB_GUID) ..."
-  ./bin/agd start -g "$HUB_GUID" -c linbit-hub -a "$ACCOUNT"
+  AGNOSTICD_ROOT="$AGNOSTICD_ROOT" "$SCRIPT_DIR/run-agd.sh" start -g "$HUB_GUID" -c linbit-hub -a "$ACCOUNT"
   echo "Hub started. Waiting 60s for RHACM to stabilize..."
   sleep 60
 fi
@@ -46,7 +47,7 @@ start_one() {
   local config_name="linbit-student-${student_num}"
   [[ -f "${AGNOSTICD_VARS}/${config_name}.yml" ]] || config_name="linbit-student"
   echo "==> Starting $guid ..."
-  ./bin/agd start -g "$guid" -c "$config_name" -a "$ACCOUNT" || \
+  AGNOSTICD_ROOT="$AGNOSTICD_ROOT" "$SCRIPT_DIR/run-agd.sh" start -g "$guid" -c "$config_name" -a "$ACCOUNT" || \
     echo "WARNING: Failed to start $guid"
 }
 

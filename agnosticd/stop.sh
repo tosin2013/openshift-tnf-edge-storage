@@ -24,8 +24,9 @@ STATE_DIR="${SCRIPT_DIR}/.state"
 MANIFEST="${STATE_DIR}/students.txt"
 
 # Ensure symlinks exist
-ln -sf "$SCRIPT_DIR/vars/hub/linbit-hub.yaml" "$AGNOSTICD_VARS/linbit-hub.yml"
-ln -sf "$SCRIPT_DIR/vars/student/linbit-student.yaml" "$AGNOSTICD_VARS/linbit-student.yml"
+# Copy, not symlink — EE containers cannot follow host symlinks
+cp "$SCRIPT_DIR/vars/hub/linbit-hub.yaml" "$AGNOSTICD_VARS/linbit-hub.yml"
+cp "$SCRIPT_DIR/vars/student/linbit-student.yaml" "$AGNOSTICD_VARS/linbit-student.yml"
 
 cd "$AGNOSTICD_ROOT"
 
@@ -38,7 +39,7 @@ stop_one() {
   local config_name="linbit-student-${student_num}"
   [[ -f "${AGNOSTICD_VARS}/${config_name}.yml" ]] || config_name="linbit-student"
   echo "==> Stopping $guid ..."
-  ./bin/agd stop -g "$guid" -c "$config_name" -a "$ACCOUNT" || \
+  AGNOSTICD_ROOT="$AGNOSTICD_ROOT" "$SCRIPT_DIR/run-agd.sh" stop -g "$guid" -c "$config_name" -a "$ACCOUNT" || \
     echo "WARNING: Failed to stop $guid"
 }
 
@@ -56,7 +57,7 @@ fi
 # Stop hub
 if [[ "$STOP_HUB" == "true" ]]; then
   echo "==> Stopping hub ($HUB_GUID) ..."
-  ./bin/agd stop -g "$HUB_GUID" -c linbit-hub -a "$ACCOUNT"
+  AGNOSTICD_ROOT="$AGNOSTICD_ROOT" "$SCRIPT_DIR/run-agd.sh" stop -g "$HUB_GUID" -c linbit-hub -a "$ACCOUNT"
 fi
 
 echo "All clusters stopped."

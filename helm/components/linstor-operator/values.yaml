@@ -1,7 +1,7 @@
 operator:
   enabled: true
   namespace: linbit-sds
-  channel: stable
+  channel: stable-v2
   source: certified-operators
   sourceNamespace: openshift-marketplace
   installPlanApproval: Automatic
@@ -11,3 +11,13 @@ storagePool:
   providerType: "LVM_THIN"
   devicePaths:
     - /dev/xvdb
+
+# LINBIT customer/trial registry credentials (drbd.io).
+# Prefer injecting via ocp4_workload_field_content_helm_values from AgnosticD secrets.
+# When create=true and username/password are set, a docker-registry Secret is rendered.
+registrySecret:
+  create: false
+  name: drbdiocred
+  server: drbd.io
+  username: ""
+  password: ""

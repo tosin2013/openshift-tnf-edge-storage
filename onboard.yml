@@ -145,7 +145,7 @@ config:
       required: true
 
     - key: num_students
-      prompt: "Number of student clusters"
+      prompt: "Number of student clusters (drives deploy size and AWS quota checks)"
       default: "2"
 
     - key: deploy_hub
@@ -188,11 +188,23 @@ validation:
     fail_message: >-
       Download your pull secret from
       https://console.redhat.com/openshift/downloads
+      and save it as ${pull_secret_path}
 
   - name: "Pull secret is valid JSON"
-    command: "python3 -m json.tool ${pull_secret_path} > /dev/null 2>&1"
+    command: "python3 -c \"import json,sys; d=json.load(open('${pull_secret_path}')); sys.exit(0 if isinstance(d,dict) and d.get('auths') else 1)\""
     required: true
-    fail_message: "Pull secret file is not valid JSON. Re-download it."
+    fail_message: >-
+      Pull secret at ${pull_secret_path} is not valid OpenShift pull-secret JSON
+      (expected a top-level \"auths\" object). Re-download from
+      https://console.redhat.com/openshift/downloads
+
+  - name: "AgnosticD secrets.yml has real ocp4_pull_secret"
+    command: "python3 -c \"import json,sys,yaml; d=yaml.safe_load(open('${agnosticd_root}/../agnosticd-v2-secrets/secrets.yml')); ps=d.get('ocp4_pull_secret') or ''; sys.exit(1) if (not isinstance(ps,str) or 'Add Your Pull Secret' in ps or ps.strip().startswith('<')) else json.loads(ps)\""
+    required: true
+    fail_message: >-
+      ocp4_pull_secret in ${agnosticd_root}/../agnosticd-v2-secrets/secrets.yml
+      is still a placeholder or invalid JSON. Paste the full contents of
+      ${pull_secret_path} as the ocp4_pull_secret value (quoted JSON string).
 
   - name: "AgnosticD agd binary"
     command: "test -x ${agnosticd_root}/bin/agd"
@@ -213,6 +225,25 @@ validation:
       Secrets file still has placeholder values.
       Edit secrets-${account}.yml and fill in your AWS credentials.
 
+  - name: "LINBIT registry credentials in secrets"
+    command: >-
+      python3 -c "import sys,yaml; p='${agnosticd_root}/../agnosticd-v2-secrets/secrets.yml'; d=yaml.safe_load(open(p)) or {};
+      u=(d.get('linbit_registry_username') or '').strip(); w=(d.get('linbit_registry_password') or '').strip();
+      ph=lambda v: (not v) or v.startswith('<') or v.endswith('>') or ('your linbit' in v.lower())
+      or ('change_me' in v.lower()) or ('changeme' in v.lower())
+      or v.lower() in ('xxx','xxxx','todo','example','placeholder');
+      sys.exit(1 if ph(u) or ph(w) else 0)"
+    required: true
+    fail_message: >-
+      Add your LINBIT Customer Portal (https://my.linbit.com/) email and password to
+      ${agnosticd_root}/../agnosticd-v2-secrets/secrets.yml:
+        linbit_registry_username: your-portal-email
+        linbit_registry_password: your-portal-password
+      Replace <Your LINBIT ...> placeholders. These create the in-cluster drbd.io
+      pull secret (drbdiocred) for LINSTOR. Deploy hard-fails until this passes.
+      Or re-run: make setup  (prompts and writes into secrets.yml).
+      How-to: docs/setup/linbit-registry-credentials.md
+
   - name: "Route53 hosted zone"
     command: "aws route53 list-hosted-zones --query \"HostedZones[?Name=='${base_domain}.'].Id\" --output text | grep -q '/hostedzone/'"
     required: false
@@ -226,55 +257,29 @@ validation:
 
 quota_checks:
   # Hub HA: ~30 vCPUs, each TNA student: ~22 vCPUs
-  # Default 2 students: 30 + 44 = 74
+  # needed supports arithmetic with ${num_students} (evaluated by bootstrap.sh)
+  # Keep limit/usage commands single-line: YAML folded blocks with deeper
+  # indentation preserve newlines, which breaks bootstrap.sh eval.
   - label: "EC2 vCPUs (On-Demand Standard)"
-    needed: 74
-    limit_command: >-
-      aws service-quotas get-service-quota
-        --service-code ec2 --quota-code L-1216C47A
-        --region ${aws_region}
-        --query 'Quota.Value' --output json |
-        python3 -c "import sys,json; v=json.load(sys.stdin); print(int(v) if v else 0)"
-    usage_command: >-
-      aws ec2 describe-instances
-        --region ${aws_region}
-        --filters Name=instance-state-name,Values=running
-        --output json |
-        python3 -c "import sys,json; d=json.load(sys.stdin);
-        print(sum(i.get('CpuOptions',{}).get('CoreCount',0)*2
-        for r in d.get('Reservations',[]) for i in r.get('Instances',[])))"
+    needed: "30 + 22 * ${num_students}"
+    limit_command: "aws service-quotas get-service-quota --service-code ec2 --quota-code L-1216C47A --region ${aws_region} --query Quota.Value --output text"
+    usage_command: "aws ec2 describe-instances --region ${aws_region} --filters Name=instance-state-name,Values=running --output json | python3 -c \"import sys,json;d=json.load(sys.stdin);print(sum(i.get('CpuOptions',{}).get('CoreCount',1)*i.get('CpuOptions',{}).get('ThreadsPerCore',2) for r in d.get('Reservations',[]) for i in r.get('Instances',[])))\""
     fail_message: >-
       Run: make request-quotas (or request manually at
       https://console.aws.amazon.com/servicequotas/)
 
+  # OpenShift uses ~5 EIPs per cluster (3 AZ NAT + bastion/API headroom)
   - label: "Elastic IPs"
-    needed: 3
-    limit_command: >-
-      aws service-quotas get-service-quota
-        --service-code ec2 --quota-code L-0263D0A3
-        --region ${aws_region}
-        --query 'Quota.Value' --output json |
-        python3 -c "import sys,json; v=json.load(sys.stdin); print(int(v) if v else 0)"
-    usage_command: >-
-      aws ec2 describe-addresses
-        --region ${aws_region}
-        --output json |
-        python3 -c "import sys,json; print(len(json.load(sys.stdin).get('Addresses',[])))"
+    needed: "5 * (1 + ${num_students})"
+    limit_command: "aws service-quotas get-service-quota --service-code ec2 --quota-code L-0263D0A3 --region ${aws_region} --query Quota.Value --output text"
+    usage_command: "aws ec2 describe-addresses --region ${aws_region} --query \"length(Addresses)\" --output text"
     fail_message: "Run: make request-quotas (or release unused EIPs manually)"
 
+  # Bastion/CFN VPC + OpenShift installer VPC per cluster
   - label: "VPCs"
-    needed: 3
-    limit_command: >-
-      aws service-quotas get-service-quota
-        --service-code vpc --quota-code L-F678F1CE
-        --region ${aws_region}
-        --query 'Quota.Value' --output json |
-        python3 -c "import sys,json; v=json.load(sys.stdin); print(int(v) if v else 0)"
-    usage_command: >-
-      aws ec2 describe-vpcs
-        --region ${aws_region}
-        --output json |
-        python3 -c "import sys,json; print(len(json.load(sys.stdin).get('Vpcs',[])))"
+    needed: "2 * (1 + ${num_students})"
+    limit_command: "aws service-quotas get-service-quota --service-code vpc --quota-code L-F678F1CE --region ${aws_region} --query Quota.Value --output text"
+    usage_command: "aws ec2 describe-vpcs --region ${aws_region} --query \"length(Vpcs)\" --output text"
     fail_message: "Run: make request-quotas (or delete unused VPCs manually)"
 
 # ─────────────────────────────────────────────────────────────
@@ -292,15 +297,27 @@ post_setup:
     Ensure your secrets file has real AWS credentials:
       ${agnosticd_root}/../agnosticd-v2-secrets/secrets-${account}.yml
 
+    Ensure LINBIT Customer Portal credentials are in secrets.yml (drbd.io pull secret):
+      Portal: https://my.linbit.com/  (email + password; create/reset password there if needed)
+      linbit_registry_username: your-portal-email
+      linbit_registry_password: your-portal-password
+      File: ${agnosticd_root}/../agnosticd-v2-secrets/secrets.yml
+      Or re-run: make setup  (prompts and writes into secrets.yml)
+      How-to: docs/setup/linbit-registry-credentials.md
+
     Deploy:
       make deploy
-      # or: ./agnosticd/deploy.sh
+      # or: YES=true make deploy / make deploy ARGS=--yes
+      # or: ./agnosticd/deploy.sh --yes
 
     Lifecycle:
-      make stop       # hibernate (saves AWS costs)
-      make start      # resume
-      make status     # check cluster health
-      make teardown   # destroy everything
+      make stop         # hibernate (saves AWS costs)
+      make start        # resume
+      make status       # check cluster health
+      make check-quota  # AWS quota check / request
+      make dry-run      # teardown inventory (no deletes)
+      make teardown     # destroy everything (prompts, or YES=true / ARGS=--yes)
+      make destroy      # alias for teardown
 
     Workshop content:
       https://tosin2013.github.io/openshift-tnf-edge-storage/

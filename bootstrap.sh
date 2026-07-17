@@ -233,6 +233,7 @@ version_gte() {
 # ─── Variable Store ─────────────────────────────────────────────────────────
 
 declare -A VARS
+CONFIG_FROM_FILE=false
 
 substitute_vars() {
     local text="$1"
@@ -242,6 +243,51 @@ substitute_vars() {
         text="${text//\$\{${key}\}/${val}}"
     done
     echo "$text"
+}
+
+# Expand ~ in path-like config values
+expand_path_vars() {
+    local key
+    for key in agnosticd_root pull_secret_path; do
+        if [[ -n "${VARS[$key]+_}" ]]; then
+            VARS["$key"]="${VARS[$key]/#\~/$HOME}"
+        fi
+    done
+}
+
+secrets_file_path() {
+    local root="${VARS[agnosticd_root]:-}"
+    local account="${VARS[account]:-}"
+    [[ -n "$root" && -n "$account" ]] || { echo ""; return; }
+    echo "${root}/../agnosticd-v2-secrets/secrets-${account}.yml"
+}
+
+# Returns: missing | placeholders | ok
+secrets_status() {
+    local path
+    path="$(secrets_file_path)"
+    if [[ -z "$path" || ! -f "$path" ]]; then
+        echo "missing"
+        return
+    fi
+    if grep -q '<Your' "$path" 2>/dev/null || ! grep -q 'aws_access_key_id:' "$path" 2>/dev/null; then
+        echo "placeholders"
+        return
+    fi
+    echo "ok"
+}
+
+choices_to_str() {
+    local choices="$1"
+    if [[ -z "$choices" || "$choices" == "null" ]]; then
+        echo ""
+        return
+    fi
+    echo "$choices" | python3 -c "
+import json, sys
+arr = json.load(sys.stdin)
+print(','.join(str(x) for x in arr)) if isinstance(arr, list) else print('')
+" 2>/dev/null || echo ""
 }
 
 # ─── Prompt Helper ──────────────────────────────────────────────────────────
@@ -370,10 +416,13 @@ run_setup_steps() {
         prompt_text="$(manifest_get ".setup_steps[$i].prompt")"
         default_val="$(manifest_get ".setup_steps[$i].default")"
 
-        if [[ -n "$prompt_var" ]]; then
+        # Config wizard already collected values; only prompt if still unset
+        if [[ -n "$prompt_var" && -z "${VARS[$prompt_var]+_}" ]]; then
             prompt_for "$prompt_var" "${prompt_text:-$prompt_var}" "${default_val:-}"
             local raw="${VARS[$prompt_var]}"
             VARS["$prompt_var"]="${raw/#\~/$HOME}"
+        elif [[ -n "$prompt_var" ]]; then
+            VARS["$prompt_var"]="${VARS[$prompt_var]/#\~/$HOME}"
         fi
 
         check="$(substitute_vars "$check")"
@@ -391,60 +440,396 @@ run_setup_steps() {
     done
 }
 
-# ─── Phase: Configuration ───────────────────────────────────────────────────
+# ─── Phase: Configuration Wizard ────────────────────────────────────────────
 
-configure() {
-    local count
+apply_manifest_defaults() {
+    local count i key default_val
     count="$(manifest_len ".config.prompts")"
-    if (( count == 0 )); then return 0; fi
+    for (( i=0; i<count; i++ )); do
+        key="$(manifest_get ".config.prompts[$i].key")"
+        default_val="$(manifest_get ".config.prompts[$i].default")"
+        if [[ -n "$key" ]]; then
+            VARS["$key"]="${default_val:-}"
+        fi
+    done
+    count="$(manifest_len ".setup_steps")"
+    for (( i=0; i<count; i++ )); do
+        key="$(manifest_get ".setup_steps[$i].prompt_var")"
+        default_val="$(manifest_get ".setup_steps[$i].default")"
+        if [[ -n "$key" && -z "${VARS[$key]+_}" ]]; then
+            VARS["$key"]="${default_val/#\~/$HOME}"
+        fi
+    done
+    expand_path_vars
+}
+
+fill_missing_from_manifest() {
+    local count i key default_val
+    count="$(manifest_len ".config.prompts")"
+    for (( i=0; i<count; i++ )); do
+        key="$(manifest_get ".config.prompts[$i].key")"
+        default_val="$(manifest_get ".config.prompts[$i].default")"
+        if [[ -n "$key" && -z "${VARS[$key]+_}" ]]; then
+            VARS["$key"]="${default_val:-}"
+        fi
+    done
+    count="$(manifest_len ".setup_steps")"
+    for (( i=0; i<count; i++ )); do
+        key="$(manifest_get ".setup_steps[$i].prompt_var")"
+        default_val="$(manifest_get ".setup_steps[$i].default")"
+        if [[ -n "$key" && -z "${VARS[$key]+_}" ]]; then
+            VARS["$key"]="${default_val/#\~/$HOME}"
+        fi
+    done
+    expand_path_vars
+}
+
+show_config_summary() {
+    local secrets_path secrets_st pull_st agd_st
+    secrets_path="$(secrets_file_path)"
+    secrets_st="$(secrets_status)"
+    case "$secrets_st" in
+        missing)      secrets_st="MISSING" ;;
+        placeholders) secrets_st="PLACEHOLDERS (needs edit)" ;;
+        ok)           secrets_st="OK" ;;
+    esac
+
+    if [[ -n "${VARS[pull_secret_path]:-}" && -f "${VARS[pull_secret_path]}" ]]; then
+        pull_st="OK"
+    else
+        pull_st="MISSING"
+    fi
+
+    if [[ -n "${VARS[agnosticd_root]:-}" && -x "${VARS[agnosticd_root]}/bin/agd" ]]; then
+        agd_st="OK"
+    else
+        agd_st="MISSING"
+    fi
 
     echo ""
-    echo -e "${BOLD}--- Configuration ---${RESET}"
+    echo -e "${BOLD}--- Configuration Summary ---${RESET}"
     echo ""
+    echo "  account:          ${VARS[account]:-}"
+    echo "  aws_region:       ${VARS[aws_region]:-}"
+    echo "  base_domain:      ${VARS[base_domain]:-}"
+    echo "  owner:            ${VARS[owner]:-}"
+    echo "  num_students:     ${VARS[num_students]:-}"
+    echo "  deploy_hub:       ${VARS[deploy_hub]:-}"
+    echo "  hub_guid:         ${VARS[hub_guid]:-}"
+    echo "  parallel:         ${VARS[parallel]:-}"
+    echo "  agnosticd_root:   ${VARS[agnosticd_root]:-}  [${agd_st}]"
+    echo "  pull_secret_path: ${VARS[pull_secret_path]:-}  [${pull_st}]"
+    echo "  secrets_file:     ${secrets_path:-?}  [${secrets_st}]"
+    echo ""
+}
 
-    local i key prompt_text default_val required choices choices_str
+prompt_all_config() {
+    local count i key prompt_text default_val required choices choices_str current
+    count="$(manifest_len ".config.prompts")"
     for (( i=0; i<count; i++ )); do
         key="$(manifest_get ".config.prompts[$i].key")"
         prompt_text="$(manifest_get ".config.prompts[$i].prompt")"
         default_val="$(manifest_get ".config.prompts[$i].default")"
         required="$(manifest_get ".config.prompts[$i].required")"
         choices="$(manifest_get ".config.prompts[$i].choices")"
-
-        choices_str=""
-        if [[ -n "$choices" && "$choices" != "null" ]]; then
-            choices_str="$(echo "$choices" | python3 -c "
-import json, sys
-arr = json.load(sys.stdin)
-print(','.join(str(x) for x in arr)) if isinstance(arr, list) else print('')
-" 2>/dev/null || echo "")"
-        fi
-
-        if [[ -z "${VARS[$key]+_}" ]]; then
-            prompt_for "$key" "$prompt_text" "${default_val:-}" "$choices_str" "${required:-false}"
-        fi
+        choices_str="$(choices_to_str "$choices")"
+        current="${VARS[$key]:-$default_val}"
+        prompt_for "$key" "$prompt_text" "$current" "$choices_str" "${required:-false}"
     done
+    expand_path_vars
+}
 
-    local output_file
+save_config() {
+    local count i key output_file gitignore
+    count="$(manifest_len ".config.prompts")"
+    (( count == 0 )) && return 0
+
+    expand_path_vars
     output_file="$(manifest_get ".config.output_file")"
-    if [[ -n "$output_file" ]]; then
-        mkdir -p "$(dirname "$output_file")"
-        {
-            echo "# Generated by bootstrap.sh — re-run to reconfigure"
-            echo "# DO NOT commit this file (contains environment-specific values)"
-            for (( i=0; i<count; i++ )); do
-                key="$(manifest_get ".config.prompts[$i].key")"
-                echo "${key}: ${VARS[$key]:-}"
-            done
-        } > "$output_file"
-        info "Config saved to: ${output_file}"
+    [[ -z "$output_file" ]] && return 0
 
-        local gitignore
-        gitignore="$(manifest_get ".config.gitignore")"
-        if [[ "$gitignore" == "true" ]]; then
-            if ! grep -qF "$output_file" .gitignore 2>/dev/null; then
-                echo "$output_file" >> .gitignore
-                info "Added ${output_file} to .gitignore"
-            fi
+    mkdir -p "$(dirname "$output_file")"
+    {
+        echo "# Generated by bootstrap.sh — re-run to reconfigure"
+        echo "# DO NOT commit this file (contains environment-specific values)"
+        for (( i=0; i<count; i++ )); do
+            key="$(manifest_get ".config.prompts[$i].key")"
+            echo "${key}: ${VARS[$key]:-}"
+        done
+    } > "$output_file"
+    info "Config saved to: ${output_file}"
+
+    gitignore="$(manifest_get ".config.gitignore")"
+    if [[ "$gitignore" == "true" ]]; then
+        if ! grep -qF "$output_file" .gitignore 2>/dev/null; then
+            echo "$output_file" >> .gitignore
+            info "Added ${output_file} to .gitignore"
+        fi
+    fi
+}
+
+configure() {
+    local count
+    count="$(manifest_len ".config.prompts")"
+    if (( count == 0 )); then return 0; fi
+
+    fill_missing_from_manifest
+    show_config_summary
+
+    if [[ "$NON_INTERACTIVE" == "true" ]]; then
+        save_config
+        return 0
+    fi
+
+    local choice
+    if [[ "$CONFIG_FROM_FILE" == "true" ]]; then
+        echo "  [k] Keep existing values"
+        echo "  [e] Edit values (Enter accepts current)"
+        echo "  [r] Reset to manifest defaults and edit"
+        read -rp "  Choice [k/e/r] (default: k): " choice
+        choice="${choice:-k}"
+    else
+        echo "  No saved config yet. Review defaults below, then edit or accept."
+        echo "  [e] Edit values (Enter accepts shown default)"
+        echo "  [k] Keep defaults as-is"
+        echo "  [r] Reset to manifest defaults and edit"
+        read -rp "  Choice [e/k/r] (default: e): " choice
+        choice="${choice:-e}"
+    fi
+
+    case "$choice" in
+        k|K)
+            info "Keeping current configuration."
+            ;;
+        r|R)
+            info "Resetting to manifest defaults..."
+            VARS=()
+            CONFIG_FROM_FILE=false
+            apply_manifest_defaults
+            echo ""
+            echo -e "${BOLD}--- Edit Configuration ---${RESET}"
+            echo ""
+            prompt_all_config
+            ;;
+        e|E|*)
+            echo ""
+            echo -e "${BOLD}--- Edit Configuration ---${RESET}"
+            echo ""
+            prompt_all_config
+            ;;
+    esac
+
+    show_config_summary
+    save_config
+}
+
+# ─── Phase: Secrets Assist ──────────────────────────────────────────────────
+
+assist_pull_secret() {
+    local secrets_yml pull_path result
+    secrets_yml="${VARS[agnosticd_root]:-}/../agnosticd-v2-secrets/secrets.yml"
+    pull_path="${VARS[pull_secret_path]:-}"
+
+    if [[ -z "$pull_path" || ! -f "$pull_path" ]]; then
+        warn_msg "Pull secret file missing (${pull_path:-unset}). Download from console.redhat.com."
+        return 0
+    fi
+
+    if [[ ! -f "$secrets_yml" ]]; then
+        warn_msg "AgnosticD secrets.yml not found: ${secrets_yml}"
+        return 0
+    fi
+
+    # Always sync pull-secret.json → secrets.yml during setup (idempotent).
+    if ! result="$(python3 -c "
+import json, sys, yaml
+
+pull_path, secrets_yml = sys.argv[1], sys.argv[2]
+try:
+    ps = json.load(open(pull_path))
+except Exception as e:
+    print(f'ERROR: {pull_path} is not valid JSON: {e}', file=sys.stderr)
+    sys.exit(2)
+if not isinstance(ps, dict) or 'auths' not in ps:
+    print(f'ERROR: {pull_path} is not an OpenShift pull secret (missing auths)', file=sys.stderr)
+    sys.exit(2)
+
+new_val = json.dumps(ps)
+d = yaml.safe_load(open(secrets_yml)) or {}
+old = d.get('ocp4_pull_secret') or ''
+if old == new_val:
+    print('unchanged')
+    sys.exit(0)
+d['ocp4_pull_secret'] = new_val
+with open(secrets_yml, 'w') as f:
+    yaml.safe_dump(d, f, default_flow_style=False, sort_keys=False)
+print('updated')
+" "$pull_path" "$secrets_yml")"; then
+        fail "Failed to sync ocp4_pull_secret from ${pull_path}"
+        return 1
+    fi
+
+    if [[ "$result" == "unchanged" ]]; then
+        ok "ocp4_pull_secret already matches ${pull_path}"
+    else
+        ok "ocp4_pull_secret updated in secrets.yml from ${pull_path}"
+    fi
+}
+
+# Returns 0 if value looks like a real LINBIT registry credential (not a placeholder).
+_linbit_cred_is_real() {
+    python3 -c "
+import sys
+v = (sys.argv[1] or '').strip()
+if not v:
+    sys.exit(1)
+low = v.lower()
+if v.startswith('<') or v.endswith('>'):
+    sys.exit(1)
+if 'your linbit' in low or 'change_me' in low or 'changeme' in low:
+    sys.exit(1)
+if low in ('xxx', 'xxxx', 'todo', 'example', 'placeholder', 'your-portal-email', 'your-portal-password'):
+    sys.exit(1)
+sys.exit(0)
+" "$1"
+}
+
+_write_linbit_registry_secrets() {
+    local secrets_yml user pass
+    secrets_yml="$1"
+    user="$2"
+    pass="$3"
+    python3 -c "
+import sys, yaml
+path, user, password = sys.argv[1], sys.argv[2], sys.argv[3]
+d = yaml.safe_load(open(path)) or {}
+d['linbit_registry_username'] = user
+d['linbit_registry_password'] = password
+with open(path, 'w') as f:
+    yaml.safe_dump(d, f, default_flow_style=False, sort_keys=False)
+" "$secrets_yml" "$user" "$pass"
+}
+
+assist_linbit_registry() {
+    local secrets_yml user pass reply cur_user cur_pass
+    secrets_yml="${VARS[agnosticd_root]:-}/../agnosticd-v2-secrets/secrets.yml"
+    secrets_yml="${secrets_yml/#\~/$HOME}"
+
+    echo ""
+    info "LINBIT Customer Portal credentials (drbd.io pull secret)"
+    echo "      Portal: https://my.linbit.com/"
+    echo "      How-to: docs/setup/linbit-registry-credentials.md"
+    echo "      Written to: ${secrets_yml}"
+
+    if [[ ! -f "$secrets_yml" ]]; then
+        warn_msg "AgnosticD secrets.yml not found: ${secrets_yml}"
+        return 0
+    fi
+
+    cur_user="$(python3 -c "import yaml,sys; d=yaml.safe_load(open(sys.argv[1])) or {}; print((d.get('linbit_registry_username') or '').strip())" "$secrets_yml")"
+    cur_pass="$(python3 -c "import yaml,sys; d=yaml.safe_load(open(sys.argv[1])) or {}; print((d.get('linbit_registry_password') or '').strip())" "$secrets_yml")"
+
+    if _linbit_cred_is_real "$cur_user" && _linbit_cred_is_real "$cur_pass"; then
+        ok "LINBIT registry credentials already set in secrets.yml (user: ${cur_user})"
+        if [[ "$NON_INTERACTIVE" == "true" ]]; then
+            return 0
+        fi
+        read -rp "  Keep existing LINBIT credentials? [Y/n]: " reply
+        reply="${reply:-Y}"
+        if [[ "$reply" =~ ^[Yy]$ ]]; then
+            return 0
+        fi
+    else
+        warn_msg "LINBIT registry credentials missing or still placeholders in secrets.yml"
+        if [[ "$NON_INTERACTIVE" == "true" ]]; then
+            warn_msg "Non-interactive mode: edit secrets.yml or re-run make setup interactively."
+            return 0
+        fi
+    fi
+
+    echo "      Enter your my.linbit.com email and password (used for drbd.io image pulls)."
+    read -rp "  LINBIT portal email: " user
+    user="$(echo "$user" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    if ! _linbit_cred_is_real "$user"; then
+        read -rp "  Email looks empty/placeholder. Re-enter LINBIT portal email: " user
+        user="$(echo "$user" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    fi
+    if ! _linbit_cred_is_real "$user"; then
+        warn_msg "Skipping LINBIT write — username still empty or placeholder."
+        return 0
+    fi
+
+    read -rsp "  LINBIT portal password: " pass
+    echo ""
+    pass="$(echo "$pass" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    if ! _linbit_cred_is_real "$pass"; then
+        read -rsp "  Password looks empty/placeholder. Re-enter LINBIT portal password: " pass
+        echo ""
+        pass="$(echo "$pass" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    fi
+    if ! _linbit_cred_is_real "$pass"; then
+        warn_msg "Skipping LINBIT write — password still empty or placeholder."
+        return 0
+    fi
+
+    if _write_linbit_registry_secrets "$secrets_yml" "$user" "$pass"; then
+        ok "linbit_registry_* written to ${secrets_yml}"
+    else
+        fail "Failed to write LINBIT credentials to ${secrets_yml}"
+        return 1
+    fi
+}
+
+assist_secrets() {
+    local path status editor reply
+    path="$(secrets_file_path)"
+
+    echo ""
+    echo -e "${BOLD}--- Secrets ---${RESET}"
+    echo ""
+
+    assist_pull_secret
+    assist_linbit_registry
+
+    if [[ -z "$path" ]]; then
+        warn_msg "Cannot resolve account secrets path (account / agnosticd_root unset)."
+        return 0
+    fi
+
+    status="$(secrets_status)"
+    case "$status" in
+        missing)
+            warn_msg "Secrets file not found: ${path}"
+            echo "      Create it from the AgnosticD template, then fill in AWS credentials."
+            ;;
+        placeholders)
+            warn_msg "Secrets file has placeholder values: ${path}"
+            echo "      Edit the file and replace <Your ...> placeholders with real credentials."
+            ;;
+        ok)
+            ok "Account secrets file looks configured: ${path}"
+            return 0
+            ;;
+    esac
+
+    if [[ "$NON_INTERACTIVE" == "true" ]]; then
+        return 0
+    fi
+
+    if [[ ! -f "$path" ]]; then
+        return 0
+    fi
+
+    editor="${EDITOR:-vi}"
+    read -rp "  Open account secrets file in ${editor}? [Y/n]: " reply
+    reply="${reply:-Y}"
+    if [[ "$reply" =~ ^[Yy]$ ]]; then
+        "$editor" "$path" || true
+        status="$(secrets_status)"
+        if [[ "$status" == "ok" ]]; then
+            ok "Secrets file updated."
+        else
+            warn_msg "Secrets file may still need credentials before deploy."
         fi
     fi
 }
@@ -521,31 +906,41 @@ run_quota_checks() {
 
     echo ""
     echo -e "${BOLD}--- Quota Check ---${RESET}"
+    info "Sizing for num_students=${VARS[num_students]:-2} (hub + student clusters)"
     echo ""
 
     local total=0 passed=0
-    local i label needed limit_cmd usage_cmd fail_message
+    local i label needed needed_expr limit_cmd usage_cmd fail_message
     for (( i=0; i<count; i++ )); do
         label="$(manifest_get ".quota_checks[$i].label")"
-        needed="$(manifest_get ".quota_checks[$i].needed")"
+        needed_expr="$(manifest_get ".quota_checks[$i].needed")"
         limit_cmd="$(manifest_get ".quota_checks[$i].limit_command")"
         usage_cmd="$(manifest_get ".quota_checks[$i].usage_command")"
         fail_message="$(manifest_get ".quota_checks[$i].fail_message")"
 
+        needed_expr="$(substitute_vars "$needed_expr")"
         limit_cmd="$(substitute_vars "$limit_cmd")"
         usage_cmd="$(substitute_vars "$usage_cmd")"
         fail_message="$(substitute_vars "$fail_message")"
 
+        # Support plain integers or arithmetic expressions (e.g. 30 + 22 * 2)
+        if [[ "$needed_expr" =~ ^[0-9+\*/%().[:space:]-]+$ ]]; then
+            needed=$((needed_expr))
+        else
+            needed=0
+        fi
+
         total=$((total + 1))
 
         local limit_val usage_val available
-        limit_val=$(eval "$limit_cmd" 2>/dev/null | tr -d '[:space:]' || echo "0")
-        usage_val=$(eval "$usage_cmd" 2>/dev/null | tr -d '[:space:]' || echo "0")
+        limit_val=$(eval "$limit_cmd" 2>/dev/null | tr -d '[:space:]' || true)
+        usage_val=$(eval "$usage_cmd" 2>/dev/null | tr -d '[:space:]' || true)
 
+        # AWS --output text may return "None"; keep only a numeric value.
         limit_val="${limit_val%%.*}"
         usage_val="${usage_val%%.*}"
-        limit_val="${limit_val:-0}"
-        usage_val="${usage_val:-0}"
+        [[ "$limit_val" =~ ^-?[0-9]+$ ]] || limit_val=0
+        [[ "$usage_val" =~ ^-?[0-9]+$ ]] || usage_val=0
 
         available=$((limit_val - usage_val))
 
@@ -583,46 +978,38 @@ show_post_setup() {
     substitute_vars "$message"
 }
 
-# ─── Load Defaults (for --check-only and --non-interactive) ──────────────────
+# ─── Load Defaults (config.yml or manifest) ──────────────────────────────────
 
 load_defaults() {
-    local config_file
+    local config_file line key value
     config_file="$(manifest_get ".config.output_file")"
+    CONFIG_FROM_FILE=false
 
-    # If a config file already exists, read values from it
     if [[ -n "$config_file" && -f "$config_file" ]]; then
-        while IFS=': ' read -r key value; do
-            key=$(echo "$key" | tr -d ' ')
-            value=$(echo "$value" | tr -d '"' | tr -d "'")
-            [[ "$key" =~ ^#.*$ || -z "$key" ]] && continue
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            [[ "$line" =~ ^[[:space:]]*# ]] && continue
+            [[ -z "${line// /}" ]] && continue
+            key="${line%%:*}"
+            value="${line#*:}"
+            key="${key#"${key%%[![:space:]]*}"}"
+            key="${key%"${key##*[![:space:]]}"}"
+            value="${value#"${value%%[![:space:]]*}"}"
+            value="${value%"${value##*[![:space:]]}"}"
+            value="${value#\"}"
+            value="${value%\"}"
+            value="${value#\'}"
+            value="${value%\'}"
+            [[ -z "$key" ]] && continue
             VARS["$key"]="$value"
         done < "$config_file"
+        expand_path_vars
+        fill_missing_from_manifest
+        CONFIG_FROM_FILE=true
         info "Loaded config from: ${config_file}"
         return
     fi
 
-    # Otherwise populate VARS with manifest defaults
-    local count i key default_val
-    count="$(manifest_len ".config.prompts")"
-    for (( i=0; i<count; i++ )); do
-        key="$(manifest_get ".config.prompts[$i].key")"
-        default_val="$(manifest_get ".config.prompts[$i].default")"
-        if [[ -n "$key" && -z "${VARS[$key]+_}" ]]; then
-            VARS["$key"]="${default_val:-}"
-        fi
-    done
-
-    # Also load setup_step prompt defaults
-    count="$(manifest_len ".setup_steps")"
-    for (( i=0; i<count; i++ )); do
-        key="$(manifest_get ".setup_steps[$i].prompt_var")"
-        default_val="$(manifest_get ".setup_steps[$i].default")"
-        if [[ -n "$key" && -z "${VARS[$key]+_}" ]]; then
-            local expanded="${default_val/#\~/$HOME}"
-            VARS["$key"]="$expanded"
-        fi
-    done
-
+    apply_manifest_defaults
     info "Using manifest defaults (no config file found)"
 }
 
@@ -643,8 +1030,10 @@ main() {
     info "Detected platform: ${distro}"
     info "Manifest: ${MANIFEST}"
 
+    load_defaults
+
     if [[ "$CHECK_ONLY" == "true" ]]; then
-        load_defaults
+        show_config_summary
         local rc=0
         validate || rc=1
         run_quota_checks || rc=1
@@ -662,8 +1051,10 @@ main() {
         fi
     fi
 
-    run_setup_steps
+    # Config first so ${account} / paths are available for setup + secrets
     configure
+    run_setup_steps
+    assist_secrets
 
     local validation_passed=true
     if ! validate; then
@@ -683,10 +1074,22 @@ main() {
         if [[ -n "$deploy_cmd" ]]; then
             deploy_cmd="$(substitute_vars "$deploy_cmd")"
             echo ""
-            echo -e "${BOLD}--- Deploying ---${RESET}"
-            echo ""
-            info "Running: ${deploy_cmd}"
-            eval "$deploy_cmd"
+            if [[ "$NON_INTERACTIVE" == "true" ]]; then
+                info "Running: ${deploy_cmd}"
+                eval "$deploy_cmd"
+            else
+                local deploy_reply
+                read -rp "  Deploy now? [y/N]: " deploy_reply
+                if [[ "$deploy_reply" =~ ^[Yy]$ ]]; then
+                    echo ""
+                    echo -e "${BOLD}--- Deploying ---${RESET}"
+                    echo ""
+                    info "Running: ${deploy_cmd}"
+                    eval "$deploy_cmd"
+                else
+                    info "Skipping deploy. Run later with: make deploy"
+                fi
+            fi
         fi
     elif [[ "$MODE" == "prod" && ("$validation_passed" == "false" || "$quota_passed" == "false") ]]; then
         echo ""

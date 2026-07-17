@@ -42,13 +42,14 @@ VCPU_NEEDED=$(( HUB_VCPUS + STUDENT_VCPUS * NUM_STUDENTS ))
 VCPU_REQUEST=$(( VCPU_NEEDED * 2 ))
 (( VCPU_REQUEST < 150 )) && VCPU_REQUEST=150
 
-# 1 EIP per cluster (hub + students)
-EIP_NEEDED=$(( 1 + NUM_STUDENTS ))
-EIP_REQUEST=10
+# OpenShift uses ~5 EIPs per cluster (3 AZ NAT + bastion/API headroom)
+EIP_NEEDED=$(( 5 * (1 + NUM_STUDENTS) ))
+# Request with headroom: at least 20, or 2x needed
+EIP_REQUEST=20
 (( EIP_REQUEST < EIP_NEEDED * 2 )) && EIP_REQUEST=$(( EIP_NEEDED * 2 ))
 
-# 1 VPC per cluster
-VPC_NEEDED=$(( 1 + NUM_STUDENTS ))
+# Bastion/CFN VPC + OpenShift installer VPC per cluster
+VPC_NEEDED=$(( 2 * (1 + NUM_STUDENTS) ))
 VPC_REQUEST=10
 (( VPC_REQUEST < VPC_NEEDED * 2 )) && VPC_REQUEST=$(( VPC_NEEDED * 2 ))
 

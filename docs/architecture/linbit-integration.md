@@ -98,6 +98,12 @@ After cluster exists (AgnosticD or agent-install):
 
 Prefer Helm toggles: `linstor.enabled`, `showroom.enabled`, overlays `values-aws-tna.yaml` / `values-tnf.yaml`.
 
+### Registry credentials
+
+Operator and SDS pods pull images from the private `drbd.io` registry. Maintainers supply **[my.linbit.com](https://my.linbit.com/)** Customer Portal email and password as `linbit_registry_username` / `linbit_registry_password` in AgnosticD `secrets.yml`; Field Content Helm creates the in-cluster `drbdiocred` pull secret. This is not the bare-metal `linbit-manage-node.py` package path.
+
+See [docs/setup/linbit-registry-credentials.md](../setup/linbit-registry-credentials.md).
+
 ## Operator / version notes
 
 - Target clusters: **OpenShift 4.22+**  

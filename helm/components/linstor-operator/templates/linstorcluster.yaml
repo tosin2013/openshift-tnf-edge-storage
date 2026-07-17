@@ -4,5 +4,25 @@ kind: LinstorCluster
 metadata:
   name: linstorcluster
   namespace: {{ .Values.operator.namespace }}
+{{- $pullSecret := .Values.registrySecret.name | default "drbdiocred" }}
+{{- if or .Values.registrySecret.create .Values.registrySecret.name }}
+spec:
+  controller:
+    podTemplate:
+      spec:
+        imagePullSecrets:
+          - name: {{ $pullSecret }}
+  csiController:
+    podTemplate:
+      spec:
+        imagePullSecrets:
+          - name: {{ $pullSecret }}
+  csiNode:
+    podTemplate:
+      spec:
+        imagePullSecrets:
+          - name: {{ $pullSecret }}
+{{- else }}
 spec: {}
+{{- end }}
 {{- end }}

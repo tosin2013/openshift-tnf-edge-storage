@@ -31,6 +31,14 @@ components:
       devicePaths:
         - /dev/xvdb
       providerType: "LVM_THIN"
+    # Injected at deploy via ocp4_workload_field_content_helm_values (AgnosticD secrets)
+    registrySecret:
+      create: false
+      name: drbdiocred
+      server: drbd.io
+      username: ""
+      password: ""
+
 
   storageclasses:
     enabled: true

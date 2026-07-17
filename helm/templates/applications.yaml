@@ -31,6 +31,12 @@ spec:
           {{- range .Values.components.linstorOperator.storagePool.devicePaths }}
             - {{ . }}
           {{- end }}
+        registrySecret:
+          create: {{ .Values.components.linstorOperator.registrySecret.create }}
+          name: {{ .Values.components.linstorOperator.registrySecret.name | quote }}
+          server: {{ .Values.components.linstorOperator.registrySecret.server | quote }}
+          username: {{ .Values.components.linstorOperator.registrySecret.username | quote }}
+          password: {{ .Values.components.linstorOperator.registrySecret.password | quote }}
   destination:
     server: https://kubernetes.default.svc
     namespace: {{ .Values.components.linstorOperator.namespace }}

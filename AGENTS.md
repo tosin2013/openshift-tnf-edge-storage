@@ -38,27 +38,28 @@ In **dev mode**, also process `modes.dev.extra_prerequisites` after the base lis
 
 All prerequisites must succeed before continuing.
 
-#### Phase 3 — Setup steps
+#### Phase 3 — Configuration wizard
+
+Load `config.output_file` if it exists (otherwise manifest defaults). Show a
+summary of current values plus status of secrets file, pull secret, and
+AgnosticD. Ask the user to **Keep**, **Edit**, or **Reset** to defaults.
+
+On Edit/Reset, prompt each `config.prompts` entry using the current value as
+the default (Enter keeps it). Validate `choices` and `required` as usual.
+Write a flat YAML file to `config.output_file` with one `key: value` per line.
+If `config.gitignore` is true, ensure the file path is in `.gitignore`.
+
+#### Phase 4 — Setup steps
 
 For each entry in `setup_steps`:
 
-1. If `prompt_var` is set, prompt the user for the value (show `prompt` text and
-   `default`). Store it for `${variable}` substitution.
+1. If `prompt_var` is set and not already collected by the config wizard, prompt
+   for the value. Store it for `${variable}` substitution.
 2. Run the `check` command (with variable substitution). If exit 0, skip (already done).
 3. Otherwise run the `action` command.
 
-#### Phase 4 — Configuration
-
-For each entry in `config.prompts`:
-
-1. Show the `prompt` text with `default` in brackets.
-2. If `choices` is defined, validate input against the list.
-3. If `required` is true, reject empty input.
-4. Store the answer keyed by `key`.
-
-After all prompts, write a flat YAML file to `config.output_file` with one
-`key: value` per line. If `config.gitignore` is true, ensure the file path is
-in `.gitignore`.
+After setup, assist with secrets: report whether the secrets file is missing,
+still has placeholders, or looks configured, and offer to open it in `$EDITOR`.
 
 #### Phase 5 — Validation and readiness gate
 
@@ -80,7 +81,10 @@ Compute a readiness score: `X/Y required checks passed (N warnings)`.
 If the manifest defines `quota_checks`, check cloud resource quotas before
 deploying. For each entry, run `limit_command` and `usage_command` (with variable
 substitution), compute `available = limit - usage`, and compare with `needed`.
-All quota checks must pass.
+
+`needed` may be a plain integer or an arithmetic expression using config
+variables (for example `30 + 22 * ${num_students}`). Substitute variables first,
+then evaluate with bash arithmetic. All quota checks must pass.
 
 #### Phase 6 — Post-setup
 
@@ -108,8 +112,8 @@ config prompt values.
 Run the bootstrap script directly:
 
 ```bash
-./bootstrap.sh                    # interactive setup (prompts for required values)
+./bootstrap.sh                    # interactive wizard (load/edit config, secrets, validate)
 ./bootstrap.sh --mode dev         # maintainer/contributor setup
-./bootstrap.sh --non-interactive  # use manifest defaults (CI/automation only)
+./bootstrap.sh --non-interactive  # use config.yml or manifest defaults (CI/automation only)
 ./bootstrap.sh --check-only       # validation and readiness check only
 ```

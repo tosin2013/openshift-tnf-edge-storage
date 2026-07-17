@@ -35,6 +35,14 @@ node_modules/
 # Logs and temp files
 *.log
 *.tmp
+logs/
+
+# Scaffold credential artifact names (if produced)
+student_info.txt
+deployment_info.txt
+
+# Lifecycle concurrency lock
+agnosticd/.workshop-lock
 
 # Package lock files
 package-lock.json

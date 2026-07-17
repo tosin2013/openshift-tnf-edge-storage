@@ -4,5 +4,7 @@ kind: OperatorGroup
 metadata:
   name: linstor-operator
   namespace: {{ .Values.operator.namespace }}
-spec: {}
+spec:
+  targetNamespaces:
+    - {{ .Values.operator.namespace }}
 {{- end }}

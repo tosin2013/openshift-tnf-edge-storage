@@ -22,8 +22,9 @@ STATE_DIR="${SCRIPT_DIR}/.state"
 MANIFEST="${STATE_DIR}/students.txt"
 
 # Ensure symlinks exist
-ln -sf "$SCRIPT_DIR/vars/hub/linbit-hub.yaml" "$AGNOSTICD_VARS/linbit-hub.yml"
-ln -sf "$SCRIPT_DIR/vars/student/linbit-student.yaml" "$AGNOSTICD_VARS/linbit-student.yml"
+# Copy, not symlink — EE containers cannot follow host symlinks
+cp "$SCRIPT_DIR/vars/hub/linbit-hub.yaml" "$AGNOSTICD_VARS/linbit-hub.yml"
+cp "$SCRIPT_DIR/vars/student/linbit-student.yaml" "$AGNOSTICD_VARS/linbit-student.yml"
 
 cd "$AGNOSTICD_ROOT"
 
@@ -33,7 +34,7 @@ echo "============================================================"
 echo ""
 
 echo "--- Hub Cluster: $HUB_GUID ---"
-./bin/agd status -g "$HUB_GUID" -c linbit-hub -a "$ACCOUNT" 2>/dev/null || \
+AGNOSTICD_ROOT="$AGNOSTICD_ROOT" "$SCRIPT_DIR/run-agd.sh" status -g "$HUB_GUID" -c linbit-hub -a "$ACCOUNT" 2>/dev/null || \
   echo "  Status: UNKNOWN (not deployed or not reachable)"
 echo ""
 
@@ -45,7 +46,7 @@ status_one() {
   local config_name="linbit-student-${student_num}"
   [[ -f "${AGNOSTICD_VARS}/${config_name}.yml" ]] || config_name="linbit-student"
   echo "  $guid:"
-  ./bin/agd status -g "$guid" -c "$config_name" -a "$ACCOUNT" 2>/dev/null || \
+  AGNOSTICD_ROOT="$AGNOSTICD_ROOT" "$SCRIPT_DIR/run-agd.sh" status -g "$guid" -c "$config_name" -a "$ACCOUNT" 2>/dev/null || \
     echo "    Status: UNKNOWN"
 }
 

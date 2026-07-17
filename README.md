@@ -42,6 +42,7 @@ See [docs/workshop/module-outline.md](docs/workshop/module-outline.md) for full 
 | [docs/workshop/module-outline.md](docs/workshop/module-outline.md) | Workshop structure, Helm components, Showroom modules, RHDP integration |
 | [docs/architecture/deployment-tracks.md](docs/architecture/deployment-tracks.md) | AWS vs TNF track matrix and sizing |
 | [docs/architecture/linbit-integration.md](docs/architecture/linbit-integration.md) | LINSTOR/DRBD integration patterns |
+| [docs/setup/linbit-registry-credentials.md](docs/setup/linbit-registry-credentials.md) | How to get my.linbit.com credentials for the `drbd.io` pull secret |
 | [docs/research/openshift-agent-install.md](docs/research/openshift-agent-install.md) | Track B agent-install research notes |
 | [docs/research/open-questions.md](docs/research/open-questions.md) | Items to validate before Helm/Showroom scaffold |
 
