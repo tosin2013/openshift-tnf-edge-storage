@@ -478,6 +478,11 @@ for v in json.load(sys.stdin).get("Vpcs", []):
     local st
     for st in $remaining_stacks; do
       [[ -z "$st" || "$st" == "None" ]] && continue
+      # Skip the hub stack when DESTROY_HUB=false
+      if [[ "$DESTROY_HUB" == "false" && "$st" == *"${HUB_GUID}"* ]]; then
+        info "Skipping hub stack $st (DESTROY_HUB=false)"
+        continue
+      fi
       warn "Force-deleting leftover stack $st"
       if [[ "$DRY_RUN" == "true" ]]; then
         echo "  [DRY-RUN] aws cloudformation delete-stack --stack-name $st"
@@ -562,16 +567,21 @@ if not found:
 
 leftovers_remain() {
   local stacks vpcs nats eips
+  local hub_exclude=""
+  if [[ "$DESTROY_HUB" == "false" ]]; then
+    hub_exclude="$HUB_GUID"
+  fi
   stacks="$(aws cloudformation describe-stacks --region "$AWS_REGION" \
-    --query "length(Stacks[?contains(StackName, '${BASE_GUID}')])" --output text 2>/dev/null || echo 0)"
-  vpcs="$(aws ec2 describe-vpcs --region "$AWS_REGION" --output json | BASE_GUID="$BASE_GUID" python3 -c '
+    --query "length(Stacks[?contains(StackName, '${BASE_GUID}') && !contains(StackName, '${hub_exclude:-__NOMATCH__}')])" --output text 2>/dev/null || echo 0)"
+  vpcs="$(aws ec2 describe-vpcs --region "$AWS_REGION" --output json | BASE_GUID="$BASE_GUID" HUB_EXCLUDE="$hub_exclude" python3 -c '
 import json, sys, os
 base = os.environ["BASE_GUID"]
+hub_ex = os.environ.get("HUB_EXCLUDE", "")
 n = 0
 for v in json.load(sys.stdin).get("Vpcs", []):
     tags = {t["Key"]: t["Value"] for t in v.get("Tags", [])}
     name = tags.get("Name", "") or ""
-    if base in name or "linbit" in name.lower():
+    if (base in name or "linbit" in name.lower()) and (not hub_ex or hub_ex not in name):
         n += 1
 print(n)
 ' 2>/dev/null || echo 0)"
