@@ -10,7 +10,7 @@ storagePool:
   name: lvm-thin
   providerType: "LVM_THIN"
   devicePaths:
-    - /dev/xvdb
+    - /dev/nvme1n1
 
 # LINBIT customer/trial registry credentials (drbd.io).
 # Prefer injecting via ocp4_workload_field_content_helm_values from AgnosticD secrets.

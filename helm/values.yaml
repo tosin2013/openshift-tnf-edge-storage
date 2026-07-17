@@ -22,14 +22,14 @@ components:
   linstorOperator:
     enabled: true
     namespace: linbit-sds
-    channel: stable
+    channel: stable-v2
     source: certified-operators
     sourceNamespace: openshift-marketplace
     installPlanApproval: Automatic
     storagePool:
       name: lvm-thin
       devicePaths:
-        - /dev/xvdb
+        - /dev/nvme1n1
       providerType: "LVM_THIN"
     # Injected at deploy via ocp4_workload_field_content_helm_values (AgnosticD secrets)
     registrySecret:

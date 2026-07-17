@@ -5,6 +5,8 @@ metadata:
   name: storage-pool-config
   namespace: {{ .Values.operator.namespace }}
 spec:
+  nodeSelector:
+    linbit.com/storage-role: primary
   {{- $pullSecret := .Values.registrySecret.name | default "drbdiocred" }}
   {{- if or .Values.registrySecret.create .Values.registrySecret.name }}
   podTemplate:

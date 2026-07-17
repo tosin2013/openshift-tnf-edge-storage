@@ -54,8 +54,19 @@ subdomain_base_suffix: .sandbox2530.opentlc.com
 workloads:
   - agnosticd.core_workloads.ocp4_workload_cert_manager
   - agnosticd.core_workloads.ocp4_workload_openshift_gitops
+  - agnosticd.core_workloads.ocp4_workload_openshift_virtualization
+  - ocp4_workload_linbit_storage_nodes
   - agnosticd.core_workloads.ocp4_workload_field_content
   - ocp4_workload_rhacm_import   # local role in agnosticd-v2/ansible/roles
+
+# ===================================================================
+# Workload: ocp4_workload_openshift_virtualization
+# CNV on AWS requires nested KVM emulation (no bare-metal nodes).
+# ===================================================================
+ocp4_workload_openshift_virtualization_channel: stable
+ocp4_workload_openshift_virtualization_enabled_nested_kvm: true
+ocp4_workload_openshift_virtualization_deploy_hyperconverged: true
+ocp4_workload_openshift_virtualization_install_virtctl: true
 
 # ===================================================================
 # Workload: ocp4_workload_cert_manager

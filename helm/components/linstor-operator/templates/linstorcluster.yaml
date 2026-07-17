@@ -22,7 +22,23 @@ spec:
       spec:
         imagePullSecrets:
           - name: {{ $pullSecret }}
+  satellite:
+    podTemplate:
+      spec:
+        imagePullSecrets:
+          - name: {{ $pullSecret }}
+        tolerations:
+          - key: linbit.com/arbiter
+            operator: Exists
+            effect: NoSchedule
 {{- else }}
-spec: {}
+spec:
+  satellite:
+    podTemplate:
+      spec:
+        tolerations:
+          - key: linbit.com/arbiter
+            operator: Exists
+            effect: NoSchedule
 {{- end }}
 {{- end }}
