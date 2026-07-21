@@ -1,4 +1,4 @@
-.PHONY: setup deploy teardown destroy dry-run stop start status check check-quota request-quotas
+.PHONY: setup deploy teardown destroy dry-run stop start status credentials check check-quota request-quotas
 
 # Interactive onboarding wizard (config, secrets, validation, quotas)
 setup:
@@ -34,6 +34,11 @@ start:
 
 status:
 	./agnosticd/status.sh
+
+# Show consolidated cluster access info (API URLs, kubeconfigs, passwords).
+# Use --save to write output to deployment_info.txt: make credentials ARGS=--save
+credentials:
+	./agnosticd/credentials.sh $(ARGS)
 
 check:
 	./bootstrap.sh --check-only

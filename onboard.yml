@@ -322,6 +322,7 @@ post_setup:
       make stop         # hibernate (saves AWS costs)
       make start        # resume
       make status       # check cluster health
+      make credentials  # show cluster access info (URLs, kubeconfigs, passwords)
       make check-quota  # AWS quota check / request
       make dry-run      # teardown inventory (no deletes)
       make teardown     # destroy everything (prompts, or YES=true / ARGS=--yes)

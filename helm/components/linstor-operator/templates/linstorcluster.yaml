@@ -4,6 +4,9 @@ kind: LinstorCluster
 metadata:
   name: linstorcluster
   namespace: {{ .Values.operator.namespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "5"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
 {{- $pullSecret := .Values.registrySecret.name | default "drbdiocred" }}
 {{- if or .Values.registrySecret.create .Values.registrySecret.name }}
 spec:
