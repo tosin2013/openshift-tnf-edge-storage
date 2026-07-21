@@ -106,11 +106,19 @@ setup_steps:
     action: "cd ${agnosticd_root} && ./bin/agd setup"
 
   - name: "Create secrets file for account"
-    check: "test -f ${agnosticd_root}/../agnosticd-v2-secrets/secrets-${account}.yml"
+    check: "test -f ${agnosticd_root}/../agnosticd-v2-secrets/secrets-${account}.yml && ! grep -q '<Your' ${agnosticd_root}/../agnosticd-v2-secrets/secrets-${account}.yml"
     action: |
-      cp ${agnosticd_root}/../agnosticd-v2-secrets/secrets-sandboxXXX.yml \
-         ${agnosticd_root}/../agnosticd-v2-secrets/secrets-${account}.yml && \
-      echo "Created secrets-${account}.yml — fill in your AWS credentials."
+      secrets_path="${agnosticd_root}/../agnosticd-v2-secrets/secrets-${account}.yml"
+      ak="$(aws configure get aws_access_key_id 2>/dev/null || true)"
+      sk="$(aws configure get aws_secret_access_key 2>/dev/null || true)"
+      if [[ -n "$ak" && -n "$sk" ]]; then
+        printf '%s\n' "---" "aws_access_key_id: ${ak}" "aws_secret_access_key: ${sk}" "base_domain: ${base_domain}" "agnosticd_aws_capacity_reservation_enable: false" > "$secrets_path"
+        echo "Created secrets-${account}.yml with credentials from AWS CLI."
+      else
+        cp ${agnosticd_root}/../agnosticd-v2-secrets/secrets-sandboxXXX.yml "$secrets_path"
+        sed -i "s|<Your sandbox base domain here>|${base_domain}|" "$secrets_path"
+        echo "Created secrets-${account}.yml — fill in your AWS credentials."
+      fi
 
   - name: "Configure AWS CLI"
     check: "aws sts get-caller-identity >/dev/null 2>&1"

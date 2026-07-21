@@ -803,6 +803,17 @@ assist_secrets() {
             echo "      Create it from the AgnosticD template, then fill in AWS credentials."
             ;;
         placeholders)
+            # Auto-fix: if AWS CLI is configured, populate credentials automatically
+            local ak sk
+            ak="$(aws configure get aws_access_key_id 2>/dev/null || true)"
+            sk="$(aws configure get aws_secret_access_key 2>/dev/null || true)"
+            if [[ -n "$ak" && -n "$sk" ]]; then
+                printf '%s\n' "---" "aws_access_key_id: ${ak}" "aws_secret_access_key: ${sk}" \
+                    "base_domain: ${VARS[base_domain]:-}" \
+                    "agnosticd_aws_capacity_reservation_enable: false" > "$path"
+                ok "Auto-populated secrets-${VARS[account]}.yml from AWS CLI credentials."
+                return 0
+            fi
             warn_msg "Secrets file has placeholder values: ${path}"
             echo "      Edit the file and replace <Your ...> placeholders with real credentials."
             ;;
