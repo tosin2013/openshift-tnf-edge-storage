@@ -1,0 +1,20 @@
+{{- if .Values.operator.enabled }}
+{{- $pullSecret := .Values.registrySecret.name | default "drbdiocred" }}
+{{- if or .Values.registrySecret.create .Values.registrySecret.name }}
+apiVersion: piraeus.io/v1
+kind: LinstorSatelliteConfiguration
+metadata:
+  name: arbiter-config
+  namespace: {{ .Values.operator.namespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "5"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  nodeSelector:
+    linbit.com/storage-role: arbiter
+  podTemplate:
+    spec:
+      imagePullSecrets:
+        - name: {{ $pullSecret }}
+{{- end }}
+{{- end }}
