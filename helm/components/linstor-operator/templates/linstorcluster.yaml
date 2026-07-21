@@ -8,8 +8,12 @@ metadata:
     argocd.argoproj.io/sync-wave: "5"
     argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
 {{- $pullSecret := .Values.registrySecret.name | default "drbdiocred" }}
-{{- if or .Values.registrySecret.create .Values.registrySecret.name }}
 spec:
+  tolerations:
+    - key: linbit.com/arbiter
+      operator: Exists
+      effect: NoSchedule
+{{- if or .Values.registrySecret.create .Values.registrySecret.name }}
   controller:
     podTemplate:
       spec:
@@ -25,23 +29,5 @@ spec:
       spec:
         imagePullSecrets:
           - name: {{ $pullSecret }}
-  satellite:
-    podTemplate:
-      spec:
-        imagePullSecrets:
-          - name: {{ $pullSecret }}
-        tolerations:
-          - key: linbit.com/arbiter
-            operator: Exists
-            effect: NoSchedule
-{{- else }}
-spec:
-  satellite:
-    podTemplate:
-      spec:
-        tolerations:
-          - key: linbit.com/arbiter
-            operator: Exists
-            effect: NoSchedule
 {{- end }}
 {{- end }}
