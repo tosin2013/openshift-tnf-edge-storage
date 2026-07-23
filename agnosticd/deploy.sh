@@ -60,6 +60,9 @@ NUM_STUDENTS="${NUM_STUDENTS:-2}"
 PARALLEL="${PARALLEL:-false}"
 YES="${YES:-false}"
 
+# Student deploy method: "agent-based" (true TNA) or "ipi" (legacy 6-node via AgnosticD)
+STUDENT_DEPLOY_METHOD="${STUDENT_DEPLOY_METHOD:-agent-based}"
+
 # CLI flags
 for arg in "$@"; do
   case "$arg" in
@@ -268,7 +271,8 @@ unset KUBECONFIG
 # -----------------------------------------------------------------
 echo "============================================================"
 echo "Phase 3: Deploying $NUM_STUDENTS student cluster(s)"
-echo "  Topology: TNA (2 primary + 1 arbiter)"
+echo "  Method:    ${STUDENT_DEPLOY_METHOD}"
+echo "  Topology:  TNA (2 primary + 1 arbiter)"
 echo "  Workloads: cert-manager, LINBIT SDS (field-content), RHACM import"
 echo "============================================================"
 
@@ -298,13 +302,13 @@ inject_hub_credentials() {
 
 > "$MANIFEST"
 
-deploy_student() {
+deploy_student_ipi() {
   local student_num="$1"
   local guid="${BASE_GUID}-s${student_num}"
   local config_name="linbit-student-${student_num}"
 
   echo "$guid" >> "$MANIFEST"
-  echo "==> Deploying student cluster ($guid) ..."
+  echo "==> Deploying student cluster ($guid) via IPI ..."
 
   inject_hub_credentials "$student_num" > /dev/null
 
@@ -314,6 +318,39 @@ deploy_student() {
     -a "$ACCOUNT"
 
   echo "==> Student cluster ($guid) deployed and imported into RHACM."
+}
+
+deploy_student_agent() {
+  local student_num="$1"
+  local guid="${BASE_GUID}-s${student_num}"
+
+  echo "$guid" >> "$MANIFEST"
+  echo "==> Deploying student TNA cluster ($guid) via agent-based installer ..."
+
+  "$SCRIPT_DIR/deploy-tna.sh" \
+    --guid "$guid" \
+    --account "$ACCOUNT" \
+    --region "${AWS_REGION:-us-east-2}" \
+    --domain "${BASE_DOMAIN}"
+
+  echo "==> Student TNA cluster ($guid) deployed."
+}
+
+deploy_student() {
+  local student_num="$1"
+  case "${STUDENT_DEPLOY_METHOD}" in
+    agent-based|agent|tna)
+      deploy_student_agent "$student_num"
+      ;;
+    ipi|agnosticd|legacy)
+      deploy_student_ipi "$student_num"
+      ;;
+    *)
+      echo "ERROR: Unknown STUDENT_DEPLOY_METHOD: ${STUDENT_DEPLOY_METHOD}" >&2
+      echo "Use 'agent-based' (default) or 'ipi'" >&2
+      exit 1
+      ;;
+  esac
 }
 
 if [[ "$PARALLEL" == "true" ]]; then

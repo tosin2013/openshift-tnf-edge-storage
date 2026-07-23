@@ -33,23 +33,21 @@ NUM_STUDENTS="${NUM_STUDENTS:-2}"
 
 # ─── Calculate requirements ──────────────────────────────────────────────────
 
-# Hub HA cluster: 3 CP (m6i.xlarge = 4 vCPUs) + 2 workers (m6i.2xlarge = 8 vCPUs) + bastion ≈ 30
-# Each TNA student: 2 primary (8 vCPUs) + 1 arbiter (4 vCPUs) + bastion ≈ 22
+# Hub HA cluster (IPI): 3 CP (m7a.xlarge = 4 vCPUs) + 2 workers (m7a.4xlarge = 16 vCPUs) + bastion ≈ 30
+# Each TNA student (agent-based): 2x m7a.4xlarge (32 vCPUs) + 1x m7a.xlarge (4 vCPUs) = 36
 HUB_VCPUS=30
-STUDENT_VCPUS=22
+STUDENT_VCPUS=36
 VCPU_NEEDED=$(( HUB_VCPUS + STUDENT_VCPUS * NUM_STUDENTS ))
-# Request with headroom: round up to next 50 or at least double
 VCPU_REQUEST=$(( VCPU_NEEDED * 2 ))
 (( VCPU_REQUEST < 150 )) && VCPU_REQUEST=150
 
-# OpenShift uses ~5 EIPs per cluster (3 AZ NAT + bastion/API headroom)
-EIP_NEEDED=$(( 5 * (1 + NUM_STUDENTS) ))
-# Request with headroom: at least 20, or 2x needed
+# Hub uses ~5 EIPs (IPI: NAT gateways + bastion). TNA students use NLB (no EIPs).
+EIP_NEEDED=$(( 5 + NUM_STUDENTS ))
 EIP_REQUEST=20
 (( EIP_REQUEST < EIP_NEEDED * 2 )) && EIP_REQUEST=$(( EIP_NEEDED * 2 ))
 
-# Bastion/CFN VPC + OpenShift installer VPC per cluster
-VPC_NEEDED=$(( 2 * (1 + NUM_STUDENTS) ))
+# Hub: 2 VPCs (bastion CFN + installer). TNA students: 1 VPC each.
+VPC_NEEDED=$(( 2 + NUM_STUDENTS ))
 VPC_REQUEST=10
 (( VPC_REQUEST < VPC_NEEDED * 2 )) && VPC_REQUEST=$(( VPC_NEEDED * 2 ))
 

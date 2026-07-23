@@ -59,6 +59,13 @@ prerequisites:
       macos: "brew install openshift-cli"
       fallback: "Download oc from https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/"
 
+  - name: openshift-install
+    check_command: "openshift-install version"
+    version_regex: "openshift-install (\\d+\\.\\d+)"
+    min_version: "4.22"
+    install:
+      fallback: "Download openshift-install from https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/ (match your OCP version)"
+
   - name: git
     check_command: "git --version"
     install:
@@ -264,31 +271,47 @@ validation:
 # ─────────────────────────────────────────────────────────────
 
 quota_checks:
-  # Hub HA: ~30 vCPUs, each TNA student: ~22 vCPUs
+  # Hub HA: ~30 vCPUs (3 CP + 2 workers + bastion via IPI)
+  # Each TNA student (agent-based): 2x m7a.4xlarge (32) + 1x m7a.xlarge (4) = 36 vCPUs
   # needed supports arithmetic with ${num_students} (evaluated by bootstrap.sh)
   # Keep limit/usage commands single-line: YAML folded blocks with deeper
   # indentation preserve newlines, which breaks bootstrap.sh eval.
   - label: "EC2 vCPUs (On-Demand Standard)"
-    needed: "30 + 22 * ${num_students}"
+    needed: "30 + 36 * ${num_students}"
     limit_command: "aws service-quotas get-service-quota --service-code ec2 --quota-code L-1216C47A --region ${aws_region} --query Quota.Value --output text"
     usage_command: "aws ec2 describe-instances --region ${aws_region} --filters Name=instance-state-name,Values=running --output json | python3 -c \"import sys,json;d=json.load(sys.stdin);print(sum(i.get('CpuOptions',{}).get('CoreCount',1)*i.get('CpuOptions',{}).get('ThreadsPerCore',2) for r in d.get('Reservations',[]) for i in r.get('Instances',[])))\""
     fail_message: >-
       Run: make request-quotas (or request manually at
       https://console.aws.amazon.com/servicequotas/)
 
-  # OpenShift uses ~5 EIPs per cluster (3 AZ NAT + bastion/API headroom)
+  # Hub uses ~5 EIPs (IPI: 3 AZ NAT + bastion/API)
+  # TNA students use NLB (no EIPs consumed per student)
   - label: "Elastic IPs"
-    needed: "5 * (1 + ${num_students})"
+    needed: "5 + 1 * ${num_students}"
     limit_command: "aws service-quotas get-service-quota --service-code ec2 --quota-code L-0263D0A3 --region ${aws_region} --query Quota.Value --output text"
     usage_command: "aws ec2 describe-addresses --region ${aws_region} --query \"length(Addresses)\" --output text"
     fail_message: "Run: make request-quotas (or release unused EIPs manually)"
 
-  # Bastion/CFN VPC + OpenShift installer VPC per cluster
+  # Hub: 2 VPCs (bastion CFN + installer). TNA students: 1 VPC each.
   - label: "VPCs"
-    needed: "2 * (1 + ${num_students})"
+    needed: "2 + 1 * ${num_students}"
     limit_command: "aws service-quotas get-service-quota --service-code vpc --quota-code L-F678F1CE --region ${aws_region} --query Quota.Value --output text"
     usage_command: "aws ec2 describe-vpcs --region ${aws_region} --query \"length(Vpcs)\" --output text"
     fail_message: "Run: make request-quotas (or delete unused VPCs manually)"
+
+  # Hub: ~10 EBS volumes. Each TNA student: 2 CP root + 2 CP LINSTOR + 1 arbiter root = 5 volumes.
+  - label: "EBS gp3 Volume Count"
+    needed: "10 + 5 * ${num_students}"
+    limit_command: "aws service-quotas get-service-quota --service-code ebs --quota-code L-D18FCD1D --region ${aws_region} --query Quota.Value --output text"
+    usage_command: "aws ec2 describe-volumes --region ${aws_region} --filters Name=status,Values=in-use,available --query \"length(Volumes)\" --output text"
+    fail_message: "Run: make request-quotas (or clean up unused EBS volumes)"
+
+  # Hub: ~400 GiB. Each TNA student: 2x200 (CP root) + 2x100 (LINSTOR) + 1x120 (arbiter) = 720 GiB.
+  - label: "EBS gp3 Storage (TiB)"
+    needed: "1 + 1 * ${num_students}"
+    limit_command: "aws service-quotas get-service-quota --service-code ebs --quota-code L-7A658B76 --region ${aws_region} --query Quota.Value --output text"
+    usage_command: "aws ec2 describe-volumes --region ${aws_region} --filters Name=status,Values=in-use,available --output json | python3 -c \"import sys,json;d=json.load(sys.stdin);print(sum(v.get('Size',0) for v in d.get('Volumes',[]))//1024)\""
+    fail_message: "Run: make request-quotas (or clean up unused EBS volumes)"
 
 # ─────────────────────────────────────────────────────────────
 # Post-Setup Message
@@ -299,8 +322,10 @@ post_setup:
     Setup complete! Your environment is ready.
 
     Deployment architecture:
-      Hub cluster:     HA (3 CP + 2 Workers) — RHACM + Showroom
-      Student clusters: ${num_students} x TNA (2 primary + 1 arbiter) — LINBIT SDS
+      Hub cluster:      HA (3 CP + 2 Workers) via IPI — RHACM + Showroom
+      Student clusters: ${num_students} x true TNA (2 CP + 1 arbiter = 3 nodes)
+                        via agent-based installer on EC2 — LINBIT SDS
+                        ~$52/day per student (m7a.4xlarge CP + m7a.xlarge arbiter)
 
     Ensure your secrets file has real AWS credentials:
       ${agnosticd_root}/../agnosticd-v2-secrets/secrets-${account}.yml

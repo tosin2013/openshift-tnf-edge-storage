@@ -42,6 +42,7 @@ AGNOSTICD_ROOT="${AGNOSTICD_ROOT/#\~/$HOME}"
 AGNOSTICD_VARS="${AGNOSTICD_ROOT}/../agnosticd-v2-vars"
 ACCOUNT="${ACCOUNT:-sandbox2530}"
 AWS_REGION="${AWS_REGION:-us-east-2}"
+BASE_DOMAIN="${BASE_DOMAIN:-sandbox2530.opentlc.com}"
 HUB_GUID="${HUB_GUID:-linbit-hub}"
 BASE_GUID="${BASE_GUID:-linbit}"
 NUM_STUDENTS="${NUM_STUDENTS:-2}"
@@ -197,17 +198,26 @@ discover_guids() {
     add_student_guid "${BASE_GUID}-s${i}"
   done
 
-  # 3) CloudFormation stacks openshift-cluster-${BASE_GUID}-* (students)
-  #    and openshift-cluster-${HUB_GUID}
+  # 3) CloudFormation stacks: IPI (openshift-cluster-*) and TNA (tna-*)
   if command -v aws &>/dev/null; then
     local stacks
+    # IPI stacks
     stacks="$(aws cloudformation describe-stacks --region "$AWS_REGION" \
       --query "Stacks[?starts_with(StackName, 'openshift-cluster-${BASE_GUID}')].StackName" \
       --output text 2>/dev/null || true)"
     local stack name guid
     for stack in $stacks; do
       name="${stack#openshift-cluster-}"
-      # student: linbit-s1 ; hub: linbit-hub
+      if [[ "$name" == "${BASE_GUID}-s"* ]]; then
+        add_student_guid "$name"
+      fi
+    done
+    # TNA stacks (agent-based)
+    stacks="$(aws cloudformation describe-stacks --region "$AWS_REGION" \
+      --query "Stacks[?starts_with(StackName, 'tna-${BASE_GUID}')].StackName" \
+      --output text 2>/dev/null || true)"
+    for stack in $stacks; do
+      name="${stack#tna-}"
       if [[ "$name" == "${BASE_GUID}-s"* ]]; then
         add_student_guid "$name"
       fi
@@ -216,9 +226,54 @@ discover_guids() {
 }
 
 # -----------------------------------------------------------------
-# AgnosticD destroy helpers
+# Detect deploy method for a student guid
 # -----------------------------------------------------------------
-destroy_student() {
+student_deploy_method() {
+  local guid="$1"
+  local stack_name="tna-${guid}"
+  # If a TNA CFN stack exists, this was agent-based
+  local status
+  status="$(aws cloudformation describe-stacks --region "$AWS_REGION" \
+    --stack-name "$stack_name" --query 'Stacks[0].StackStatus' --output text 2>/dev/null || echo 'NONE')"
+  if [[ "$status" != "NONE" && "$status" != "DELETE_COMPLETE" ]]; then
+    echo "agent-based"
+  else
+    echo "ipi"
+  fi
+}
+
+# -----------------------------------------------------------------
+# AgnosticD / TNA destroy helpers
+# -----------------------------------------------------------------
+destroy_student_tna() {
+  local guid="$1"
+  local stack_name="tna-${guid}"
+
+  echo "==> Destroying TNA student cluster ($guid) [stack=$stack_name] ..."
+  if [[ "$DRY_RUN" == "true" ]]; then
+    echo "  [DRY-RUN] aws cloudformation delete-stack --stack-name $stack_name"
+    return 0
+  fi
+
+  aws cloudformation delete-stack --region "$AWS_REGION" --stack-name "$stack_name" || \
+    warn "Failed to delete stack $stack_name"
+
+  info "Waiting for stack deletion ..."
+  aws cloudformation wait stack-delete-complete \
+    --region "$AWS_REGION" --stack-name "$stack_name" 2>/dev/null || \
+    warn "Stack $stack_name deletion wait timed out"
+
+  # Clean up local assets
+  local output_dir="${AGNOSTICD_ROOT}/../agnosticd-v2-output/${guid}"
+  if [[ -d "$output_dir" ]]; then
+    rm -rf "$output_dir"
+    info "Cleaned up $output_dir"
+  fi
+
+  ok "TNA student cluster $guid destroyed."
+}
+
+destroy_student_ipi() {
   local guid="$1"
   local student_num="${guid##*-s}"
   local config_name="linbit-student-${student_num}"
@@ -229,7 +284,7 @@ destroy_student() {
     cp "$SCRIPT_DIR/vars/student/linbit-student.yaml" "$AGNOSTICD_VARS/${config_name}.yml"
   fi
 
-  echo "==> Destroying student cluster ($guid) [config=$config_name] ..."
+  echo "==> Destroying IPI student cluster ($guid) [config=$config_name] ..."
   if [[ "$DRY_RUN" == "true" ]]; then
     echo "  [DRY-RUN] run-agd.sh destroy -g $guid -c $config_name -a $ACCOUNT"
     return 0
@@ -240,6 +295,16 @@ destroy_student() {
     -c "$config_name" \
     -a "$ACCOUNT" || \
     warn "Failed to destroy $guid, continuing..."
+}
+
+destroy_student() {
+  local guid="$1"
+  local method
+  method="$(student_deploy_method "$guid")"
+  case "$method" in
+    agent-based) destroy_student_tna "$guid" ;;
+    *) destroy_student_ipi "$guid" ;;
+  esac
 }
 
 destroy_hub() {
@@ -433,6 +498,52 @@ sweep_aws_orphans() {
   if ! command -v aws &>/dev/null; then
     warn "aws CLI not found; skipping orphan sweep"
     return 0
+  fi
+
+  # --- TNA-specific: orphaned EBS volumes ---
+  info "Checking for orphaned LINSTOR/workshop EBS volumes ..."
+  local orphan_vols
+  orphan_vols="$(aws ec2 describe-volumes --region "$AWS_REGION" \
+    --filters "Name=status,Values=available" "Name=tag:guid,Values=${BASE_GUID}*" \
+    --query 'Volumes[].VolumeId' --output text 2>/dev/null || true)"
+  if [[ -z "$orphan_vols" || "$orphan_vols" == "None" ]]; then
+    orphan_vols="$(aws ec2 describe-volumes --region "$AWS_REGION" \
+      --filters "Name=status,Values=available" "Name=tag-key,Values=linbit-workshop" \
+      --query 'Volumes[].VolumeId' --output text 2>/dev/null || true)"
+  fi
+
+  if [[ -n "$orphan_vols" && "$orphan_vols" != "None" ]]; then
+    local vol
+    for vol in $orphan_vols; do
+      [[ -z "$vol" || "$vol" == "None" ]] && continue
+      info "  Orphaned EBS volume: $vol"
+      if [[ "$DRY_RUN" == "true" ]]; then
+        echo "  [DRY-RUN] aws ec2 delete-volume --volume-id $vol"
+      else
+        aws ec2 delete-volume --region "$AWS_REGION" --volume-id "$vol" 2>/dev/null || \
+          warn "Could not delete volume $vol"
+      fi
+    done
+  else
+    ok "No orphaned EBS volumes found"
+  fi
+
+  # --- TNA-specific: Route53 records ---
+  info "Checking for orphaned Route53 records ..."
+  local hosted_zone_id
+  hosted_zone_id="$(aws route53 list-hosted-zones \
+    --query "HostedZones[?Name=='${BASE_DOMAIN:-}.'].Id" \
+    --output text 2>/dev/null | sed 's|/hostedzone/||' || true)"
+
+  if [[ -n "$hosted_zone_id" && "$hosted_zone_id" != "None" ]]; then
+    local dns_records
+    dns_records="$(aws route53 list-resource-record-sets --hosted-zone-id "$hosted_zone_id" \
+      --query "ResourceRecordSets[?contains(Name, '${BASE_GUID}')].{Name:Name,Type:Type}" \
+      --output text 2>/dev/null || true)"
+    if [[ -n "$dns_records" && "$dns_records" != "None" ]]; then
+      info "  Found Route53 records for ${BASE_GUID} — CFN stack deletion should handle these."
+      info "  If any persist after stack delete, manually remove via Route53 console."
+    fi
   fi
 
   # Remaining CFN stacks for this workshop

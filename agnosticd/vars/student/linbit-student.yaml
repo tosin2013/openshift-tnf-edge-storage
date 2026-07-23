@@ -1,18 +1,39 @@
 ---
 # ===================================================================
 # LINBIT Edge Storage Workshop - Student Cluster
-# TNA topology (2 primary + 1 arbiter) with LINBIT SDS workloads.
-# One cluster per student, deployed via Field Content Helm chart.
+# TNA topology (2 CP + 1 arbiter) with LINBIT SDS workloads.
+# One cluster per student.
+#
+# Deploy methods:
+#   agent-based (default): True TNA via CloudFormation + agent-based
+#     installer. 3 nodes total (2x m7a.4xlarge CP + 1x m7a.xlarge
+#     arbiter). ~$52/day per student.
+#   ipi (legacy): AWS IPI via AgnosticD. 6 nodes (3 CP + 3 workers).
+#     ~$85/day. Set STUDENT_DEPLOY_METHOD=ipi to use.
 # ===================================================================
 
 tag: main
 
+# ===================================================================
+# TNA Agent-Based Installer Settings (default deploy method)
+# Used by deploy-tna.sh when STUDENT_DEPLOY_METHOD=agent-based
+# ===================================================================
+student_deploy_method: agent-based
+student_cp_instance_type: m7a.4xlarge
+student_arbiter_instance_type: m7a.xlarge
+student_cp_root_volume_size: 120
+student_cp_data_volume_size: 100
+student_arbiter_root_volume_size: 50
+student_ocp_version: "4.22"
+
+# ===================================================================
+# IPI Fallback Settings (used when STUDENT_DEPLOY_METHOD=ipi)
+# ===================================================================
 cloud_provider: aws
 config: openshift-cluster
 
 aws_region: us-east-2
 
-# AWS sandbox: use RHUI on RHEL AMIs; do not register to Satellite
 install_satellite_repositories: false
 install_rhn_repositories: false
 
@@ -28,18 +49,12 @@ host_ssh_authorized_keys:
 bastion_setup_student_user: true
 bastion_student_user_name: lab-user
 
-# ===================================================================
-# Collections (V2 — installs rhpds/core_workloads for FQCN roles)
-# ===================================================================
 requirements_content:
   collections:
     - name: https://github.com/rhpds/core_workloads.git
       type: git
       version: "{{ tag }}"
 
-# ===================================================================
-# OpenShift Settings - TNA (2 primary workers + 1 arbiter)
-# ===================================================================
 cluster_name: linbit-student
 
 host_ocp4_installer_version: "4.22"

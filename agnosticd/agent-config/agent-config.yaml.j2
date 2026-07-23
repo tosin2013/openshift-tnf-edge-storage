@@ -1,0 +1,51 @@
+---
+apiVersion: v1beta1
+metadata:
+  name: {{ CLUSTER_NAME }}
+rendezvousIP: {{ CP0_IP }}
+hosts:
+  - hostname: {{ CLUSTER_NAME }}-cp-0
+    role: master
+    interfaces:
+      - name: ens5
+        macAddress: {{ CP0_MAC }}
+    networkConfig:
+      interfaces:
+        - name: ens5
+          type: ethernet
+          state: up
+          ipv4:
+            enabled: true
+            dhcp: true
+          ipv6:
+            enabled: false
+  - hostname: {{ CLUSTER_NAME }}-cp-1
+    role: master
+    interfaces:
+      - name: ens5
+        macAddress: {{ CP1_MAC }}
+    networkConfig:
+      interfaces:
+        - name: ens5
+          type: ethernet
+          state: up
+          ipv4:
+            enabled: true
+            dhcp: true
+          ipv6:
+            enabled: false
+  - hostname: {{ CLUSTER_NAME }}-arbiter-0
+    role: master
+    interfaces:
+      - name: ens5
+        macAddress: {{ ARBITER_MAC }}
+    networkConfig:
+      interfaces:
+        - name: ens5
+          type: ethernet
+          state: up
+          ipv4:
+            enabled: true
+            dhcp: true
+          ipv6:
+            enabled: false
