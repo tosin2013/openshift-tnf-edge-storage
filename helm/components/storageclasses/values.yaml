@@ -3,9 +3,14 @@ rwoLocality:
   replicaCount: 2
   storagePool: lvm-thin
   fsType: xfs
+  isDefault: true
+  quorum: majority
+  onNoQuorum: io-error
 
 rwxVirt:
   name: linbit-rwx-virt
   replicaCount: 2
   storagePool: lvm-thin
   allowTwoPrimaries: true
+  quorum: majority
+  onNoQuorum: io-error

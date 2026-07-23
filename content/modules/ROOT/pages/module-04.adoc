@@ -43,19 +43,22 @@ This node does not store data but votes in DRBD quorum decisions.
 
 === Step 2: Identify the Node to Cordon
 
-Pick a primary (diskful) node -- not the arbiter.
-List nodes and choose one:
+Pick the primary (diskful) node where the database pod is **not** running.
+This ensures the database stays up when we drain the other node:
 
 [source,bash,role=execute]
 ----
-oc get nodes -l node-role.kubernetes.io/worker
+oc get nodes -l linbit.com/storage-role=primary
 ----
 
-Set a variable for convenience (replace with your node name):
+Automatically select the primary node that is NOT hosting the database pod:
 
 [source,bash,role=execute]
 ----
-export CORDON_NODE=<your-worker-node-name>
+DB_NODE=$(oc get pod -n {workshop_namespace} -l app=sample-db -o jsonpath='{.items[0].spec.nodeName}')
+export CORDON_NODE=$(oc get nodes -l linbit.com/storage-role=primary -o jsonpath='{.items[*].metadata.name}' | tr ' ' '\n' | grep -v "^${DB_NODE}$" | head -1)
+echo "Database is on: ${DB_NODE}"
+echo "Will cordon:    ${CORDON_NODE}"
 ----
 
 === Step 3: Cordon the Node
@@ -73,8 +76,10 @@ Drain the node to force workload rescheduling:
 
 [source,bash,role=execute]
 ----
-oc adm drain ${CORDON_NODE} --ignore-daemonsets --delete-emptydir-data --timeout=120s
+oc adm drain ${CORDON_NODE} --ignore-daemonsets --delete-emptydir-data --force --timeout=120s
 ----
+
+NOTE: The `--force` flag is required on TNA clusters because the control-plane guard pods (etcd, kube-apiserver) have no controller owner and would otherwise block the drain.
 
 === Step 5: Verify DRBD Quorum
 
@@ -101,7 +106,7 @@ Test that the database is still accessible:
 
 [source,bash,role=execute]
 ----
-oc exec -n {workshop_namespace} deploy/sample-db -- psql -U demo -d workshop -c "SELECT 1 AS alive;"
+oc exec -n {workshop_namespace} sample-db-0 -- psql -U demo -d workshop -c "SELECT 1 AS alive;"
 ----
 
 === Step 7: Uncordon and Resync

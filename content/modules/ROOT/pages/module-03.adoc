@@ -7,6 +7,14 @@
 *Objective:* Perform zero-downtime VM live migration using DRBD block-level RWX with `allow-two-primaries`.
 ****
 
+[IMPORTANT]
+.Hardware Requirement
+====
+This module requires worker nodes with hardware-assisted virtualization (KVM).
+On AWS, this means `.metal` instance types (e.g., `m5.metal`, `m7a.metal-48xl`).
+Standard virtualized EC2 instances do *not* expose `/dev/kvm` and will fail with `Insufficient devices.kubevirt.io/kvm`.
+====
+
 == Introduction
 
 Traditional live migration requires shared storage (NFS or similar) to allow both source and destination nodes to access the VM disk simultaneously.
@@ -72,11 +80,11 @@ oc get vmi -n {workshop_namespace} -o wide
 
 == Step 4: Start the VM (If Not Running)
 
-If the VM is not already running, start it:
+If the VM is not already running, set the `runStrategy` to `Always`:
 
 [source,bash,role=execute]
 ----
-virtctl start sample-vm -n {workshop_namespace}
+oc patch vm sample-vm -n {workshop_namespace} --type=merge -p '{"spec":{"runStrategy":"Always"}}'
 ----
 
 Wait for the VMI to reach `Running`:
@@ -85,6 +93,8 @@ Wait for the VMI to reach `Running`:
 ----
 oc wait --for=jsonpath='{.status.phase}'=Running vmi/sample-vm -n {workshop_namespace} --timeout=120s
 ----
+
+TIP: If `virtctl` is installed, you can also use `virtctl start sample-vm -n {workshop_namespace}`.
 
 == Step 5: Check DRBD State Before Migration
 
@@ -99,11 +109,19 @@ Note which node shows `InUse` -- this is the current VM host.
 
 == Step 6: Trigger Live Migration
 
-Initiate a live migration:
+Initiate a live migration by creating a `VirtualMachineInstanceMigration` resource:
 
 [source,bash,role=execute]
 ----
-virtctl migrate sample-vm -n {workshop_namespace}
+cat <<'EOF' | oc apply -f -
+apiVersion: kubevirt.io/v1
+kind: VirtualMachineInstanceMigration
+metadata:
+  name: sample-vm-migration
+  namespace: {workshop_namespace}
+spec:
+  vmiName: sample-vm
+EOF
 ----
 
 Watch the migration progress:
@@ -114,6 +132,15 @@ oc get vmim -n {workshop_namespace} -w
 ----
 
 Press `Ctrl+C` once the migration shows `Succeeded`.
+
+TIP: If `virtctl` is installed, you can also use `virtctl migrate sample-vm -n {workshop_namespace}`.
+
+Clean up the migration resource for potential future migrations:
+
+[source,bash,role=execute]
+----
+oc delete vmim sample-vm-migration -n {workshop_namespace} --ignore-not-found
+----
 
 == Step 7: Observe Dual-Primary Window
 

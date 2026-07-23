@@ -18,30 +18,63 @@ In this module you will configure an S3 remote, take snapshots of the database P
 
 [tabs]
 ====
-AWS (Default)::
+MinIO (Default)::
 +
-On AWS, you can use a real S3 bucket.
-Create the LINSTOR remote pointing to your bucket:
-+
-[source,bash,role=execute]
-----
-oc exec -n {linbit_namespace} deploy/linstor-controller -- \
-  linstor remote create s3 workshop-dr-target \
-  --endpoint s3.amazonaws.com \
-  --bucket <your-bucket-name> \
-  --region <your-region> \
-  --access-key <your-access-key> \
-  --secret-key <your-secret-key>
-----
-
-KVM / Bare Metal (TNF)::
-+
-On TNF, the Helm chart pre-deploys a MinIO instance as an S3-compatible endpoint:
+Deploy a MinIO instance as an S3-compatible endpoint for the lab:
 +
 [source,bash,role=execute]
 ----
-# Verify MinIO is running
-oc get pods -n {workshop_namespace} -l app=minio
+cat <<'MEOF' | oc apply -f -
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minio
+  namespace: {workshop_namespace}
+  labels:
+    app: minio
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: minio
+  template:
+    metadata:
+      labels:
+        app: minio
+    spec:
+      containers:
+        - name: minio
+          image: quay.io/minio/minio:latest
+          args: ["server", "/data"]
+          env:
+            - name: MINIO_ROOT_USER
+              value: minioadmin
+            - name: MINIO_ROOT_PASSWORD
+              value: minioadmin
+          ports:
+            - containerPort: 9000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+  namespace: {workshop_namespace}
+spec:
+  selector:
+    app: minio
+  ports:
+    - port: 9000
+      targetPort: 9000
+MEOF
+----
++
+Wait for MinIO to be ready, then create the backup bucket:
++
+[source,bash,role=execute]
+----
+oc wait --for=condition=available deploy/minio -n {workshop_namespace} --timeout=120s
+oc exec -n {workshop_namespace} deploy/minio -- mc alias set local http://localhost:9000 minioadmin minioadmin 2>/dev/null || true
+oc exec -n {workshop_namespace} deploy/minio -- mc mb local/workshop-backups 2>/dev/null || true
 ----
 +
 Create the LINSTOR remote pointing to MinIO:
@@ -49,12 +82,29 @@ Create the LINSTOR remote pointing to MinIO:
 [source,bash,role=execute]
 ----
 oc exec -n {linbit_namespace} deploy/linstor-controller -- \
-  linstor remote create s3 workshop-dr-target \
-  --endpoint minio.{workshop_namespace}.svc:9000 \
-  --bucket workshop-backups \
-  --region us-east-1 \
-  --access-key minioadmin \
-  --secret-key minioadmin
+  linstor remote create s3 --use-path-style \
+  workshop-dr-target \
+  http://minio.{workshop_namespace}.svc:9000 \
+  workshop-backups \
+  us-east-1 \
+  minioadmin \
+  minioadmin
+----
+
+AWS S3::
++
+If you have an AWS S3 bucket, create the LINSTOR remote pointing to it:
++
+[source,bash,role=execute]
+----
+oc exec -n {linbit_namespace} deploy/linstor-controller -- \
+  linstor remote create s3 \
+  workshop-dr-target \
+  https://s3.amazonaws.com \
+  <your-bucket-name> \
+  <your-region> \
+  <your-access-key> \
+  <your-secret-key>
 ----
 ====
 
@@ -65,9 +115,9 @@ Verify the remote was created:
 oc exec -n {linbit_namespace} deploy/linstor-controller -- linstor remote list
 ----
 
-== Step 2: Create an Encryption Passphrase (Optional)
+== Step 2: Create an Encryption Passphrase
 
-If you want to encrypt snapshots at rest in S3:
+LINSTOR requires a master encryption passphrase before S3 remotes can be created (credentials are encrypted at rest):
 
 [source,bash,role=execute]
 ----
@@ -79,19 +129,39 @@ NOTE: In production, use Vault or an external KMS for passphrase management.
 
 == Step 3: Take the First Snapshot
 
-Identify the LINSTOR resource name backing the database PVC:
+Identify and capture the LINSTOR resource name backing the database PVC:
+
+[source,bash,role=execute]
+----
+export LINSTOR_RESOURCE=$(oc exec -n {linbit_namespace} deploy/linstor-controller -- \
+  linstor resource list --output-format json | python3 -c "
+import sys, json
+for r in json.load(sys.stdin).get('resource_states', json.load(open('/dev/stdin')) if False else []):
+    pass
+" 2>/dev/null || \
+  oc get pv $(oc get pvc -n {workshop_namespace} -l app=sample-db -o jsonpath='{.items[0].spec.volumeName}') \
+    -o jsonpath='{.spec.csi.volumeAttributes.linstor\.csi\.linbit\.com/resource-group}' 2>/dev/null || echo "")
+----
+
+If the above does not capture automatically, list resources and set manually:
 
 [source,bash,role=execute]
 ----
 oc exec -n {linbit_namespace} deploy/linstor-controller -- linstor resource list
 ----
 
-Take a snapshot (replace `<resource-name>` with the actual name):
+[source,bash,role=execute]
+----
+# Set the resource name from the output above
+export LINSTOR_RESOURCE=<resource-name-from-output>
+----
+
+Take a snapshot:
 
 [source,bash,role=execute]
 ----
 oc exec -n {linbit_namespace} deploy/linstor-controller -- \
-  linstor snapshot create <resource-name> snap-baseline
+  linstor snapshot create ${LINSTOR_RESOURCE} snap-baseline
 ----
 
 == Step 4: Ship the Snapshot to S3
@@ -101,7 +171,7 @@ Ship the baseline snapshot to the remote target:
 [source,bash,role=execute]
 ----
 oc exec -n {linbit_namespace} deploy/linstor-controller -- \
-  linstor backup create <resource-name> --remote workshop-dr-target
+  linstor backup create workshop-dr-target ${LINSTOR_RESOURCE}
 ----
 
 Verify the backup was created:
@@ -109,7 +179,7 @@ Verify the backup was created:
 [source,bash,role=execute]
 ----
 oc exec -n {linbit_namespace} deploy/linstor-controller -- \
-  linstor backup list --remote workshop-dr-target
+  linstor backup list workshop-dr-target
 ----
 
 Note the backup ID and size -- this is a *full* backup.
@@ -120,7 +190,7 @@ Write additional data to the database to create a delta:
 
 [source,bash,role=execute]
 ----
-oc exec -n {workshop_namespace} deploy/sample-db -- \
+oc exec -n {workshop_namespace} sample-db-0 -- \
   psql -U demo -d workshop -c "
     CREATE TABLE IF NOT EXISTS dr_test (id serial PRIMARY KEY, payload text, created_at timestamp DEFAULT now());
     INSERT INTO dr_test (payload) SELECT md5(random()::text) FROM generate_series(1, 10000);
@@ -131,7 +201,7 @@ Verify the data was inserted:
 
 [source,bash,role=execute]
 ----
-oc exec -n {workshop_namespace} deploy/sample-db -- \
+oc exec -n {workshop_namespace} sample-db-0 -- \
   psql -U demo -d workshop -c "SELECT count(*) FROM dr_test;"
 ----
 
@@ -142,7 +212,7 @@ Take a second snapshot and ship it:
 [source,bash,role=execute]
 ----
 oc exec -n {linbit_namespace} deploy/linstor-controller -- \
-  linstor backup create <resource-name> --remote workshop-dr-target
+  linstor backup create workshop-dr-target ${LINSTOR_RESOURCE}
 ----
 
 List backups again:
@@ -150,7 +220,7 @@ List backups again:
 [source,bash,role=execute]
 ----
 oc exec -n {linbit_namespace} deploy/linstor-controller -- \
-  linstor backup list --remote workshop-dr-target
+  linstor backup list workshop-dr-target
 ----
 
 Compare the sizes:
@@ -180,7 +250,7 @@ Remove the test table:
 
 [source,bash,role=execute]
 ----
-oc exec -n {workshop_namespace} deploy/sample-db -- \
+oc exec -n {workshop_namespace} sample-db-0 -- \
   psql -U demo -d workshop -c "DROP TABLE IF EXISTS dr_test;"
 ----
 
@@ -189,7 +259,7 @@ Remove the snapshots (optional -- they do not affect the running cluster):
 [source,bash,role=execute]
 ----
 oc exec -n {linbit_namespace} deploy/linstor-controller -- \
-  linstor snapshot delete <resource-name> snap-baseline
+  linstor snapshot delete ${LINSTOR_RESOURCE} snap-baseline
 ----
 
 == Summary

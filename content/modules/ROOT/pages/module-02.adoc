@@ -56,14 +56,14 @@ Initialize pgbench inside the database pod:
 
 [source,bash,role=execute]
 ----
-oc exec -n {workshop_namespace} deploy/sample-db -- pgbench -i -s 10 workshop
+oc exec -n {workshop_namespace} sample-db-0 -- pgbench -i -s 10 workshop
 ----
 
 Run a read-heavy benchmark (select-only mode):
 
 [source,bash,role=execute]
 ----
-oc exec -n {workshop_namespace} deploy/sample-db -- pgbench -S -c 4 -j 2 -T 30 workshop
+oc exec -n {workshop_namespace} sample-db-0 -- pgbench -S -c 4 -j 2 -T 30 workshop
 ----
 
 Record the *TPS (transactions per second)* and *average latency* values.
@@ -74,7 +74,7 @@ Run the default pgbench workload (mixed reads and writes):
 
 [source,bash,role=execute]
 ----
-oc exec -n {workshop_namespace} deploy/sample-db -- pgbench -c 4 -j 2 -T 30 workshop
+oc exec -n {workshop_namespace} sample-db-0 -- pgbench -c 4 -j 2 -T 30 workshop
 ----
 
 Compare to the read-only results:
@@ -84,10 +84,29 @@ Compare to the read-only results:
 
 This difference demonstrates DRBD's synchronous replication cost and why `WaitForFirstConsumer` matters for read-heavy workloads.
 
-== Step 5: Create a 3-Way Replication StorageClass
+== Step 5: Observe Replication Impact
 
-Define a new StorageClass with three replicas:
+[tabs]
+====
+AWS (TNA / Compact)::
++
+On a TNA cluster you have exactly 2 diskful nodes.
+The `autoPlace: "2"` setting already replicates to both -- there is no third diskful node available for a 3-way comparison.
+Instead, observe the write latency difference by running a write-heavy workload with synchronous (`protocol C`) vs asynchronous (`protocol A`) replication:
++
+[source,bash,role=execute]
+----
+oc exec -n {linbit_namespace} deploy/linstor-controller -- \
+  linstor resource-definition list-properties pvc-$(oc get pvc -n {workshop_namespace} data-sample-db-0 -o jsonpath='{.spec.volumeName}' | sed 's/pvc-//')
+----
++
+The default is `protocol C` (synchronous) -- every write must be acknowledged by the remote peer before returning to the application.
+This is why write TPS is lower than read TPS.
 
+KVM / Bare Metal (3+ nodes)::
++
+If you have 3 or more storage nodes, create a 3-way StorageClass:
++
 [source,bash,role=execute]
 ----
 cat <<'EOF' | oc apply -f -
@@ -105,93 +124,30 @@ reclaimPolicy: Delete
 allowVolumeExpansion: true
 EOF
 ----
-
-== Step 6: Deploy a Second Database Instance
-
-Create a second PostgreSQL instance using the 3-way class:
-
-[source,bash,role=execute]
-----
-cat <<'EOF' | oc apply -f -
-apiVersion: apps/v1
-kind: StatefulSet
-metadata:
-  name: sample-db-3way
-  namespace: {workshop_namespace}
-  labels:
-    app: sample-db-3way
-spec:
-  serviceName: sample-db-3way
-  replicas: 1
-  selector:
-    matchLabels:
-      app: sample-db-3way
-  template:
-    metadata:
-      labels:
-        app: sample-db-3way
-    spec:
-      containers:
-        - name: postgres
-          image: registry.redhat.io/rhel9/postgresql-15:latest
-          env:
-            - name: POSTGRESQL_USER
-              value: demo
-            - name: POSTGRESQL_PASSWORD
-              value: demo
-            - name: POSTGRESQL_DATABASE
-              value: workshop
-          ports:
-            - containerPort: 5432
-          volumeMounts:
-            - name: data
-              mountPath: /var/lib/pgsql/data
-  volumeClaimTemplates:
-    - metadata:
-        name: data
-      spec:
-        accessModes: ["ReadWriteOnce"]
-        storageClassName: linbit-rwo-3way
-        resources:
-          requests:
-            storage: 10Gi
-EOF
-----
-
-Wait for the pod to become ready:
-
-[source,bash,role=execute]
-----
-oc wait --for=condition=ready pod -l app=sample-db-3way -n {workshop_namespace} --timeout=120s
-----
-
-== Step 7: Benchmark 3-Way Replication
-
-Initialize and benchmark the second instance:
-
-[source,bash,role=execute]
-----
-oc exec -n {workshop_namespace} statefulset/sample-db-3way -- pgbench -i -s 10 workshop
-----
-
-[source,bash,role=execute]
-----
-oc exec -n {workshop_namespace} statefulset/sample-db-3way -- pgbench -c 4 -j 2 -T 30 workshop
-----
-
-Compare results against the 2-way baseline.
++
+Deploy a second database using this class and benchmark it.
 With 3-way replication, writes must wait for two remote acknowledgments instead of one.
+====
 
-== Step 8: Clean Up
+== Step 6: Verify Replication Topology
 
-Remove the test resources:
+Examine the DRBD resource backing the database to see how replication is structured:
 
 [source,bash,role=execute]
 ----
-oc delete statefulset sample-db-3way -n {workshop_namespace}
-oc delete pvc data-sample-db-3way-0 -n {workshop_namespace}
-oc delete sc linbit-rwo-3way
+oc exec -n {linbit_namespace} deploy/linstor-controller -- linstor resource list
 ----
+
+On TNA clusters you will see:
+
+* 2 diskful replicas (`UpToDate`) on the CP/worker nodes
+* 1 diskless `TieBreaker` on the arbiter node
+
+The TieBreaker participates in quorum but does not add replication latency to writes.
+
+== Step 7: Clean Up
+
+No additional resources to clean up in this step (the sample-db StatefulSet persists for later modules).
 
 == Summary
 
@@ -199,7 +155,8 @@ In this module you:
 
 * Verified that `WaitForFirstConsumer` co-locates the pod and primary DRBD replica
 * Measured local-read performance with pgbench (select-only) -- near-bare-metal latency
-* Observed synchronous replication cost on writes (2-way vs 3-way)
+* Observed synchronous replication cost on writes
+* Examined the TNA replication topology (2 diskful + 1 TieBreaker)
 * Understood why topology-aware scheduling is critical for database workloads at the edge
 
 xref:module-03.adoc[Next: Module 3 -- VM Live Migration ->]

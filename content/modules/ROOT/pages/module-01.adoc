@@ -121,6 +121,41 @@ spec:
 EOF
 ----
 
+Check the PVC status:
+
+[source,bash,role=execute]
+----
+oc get pvc test-linstor-pvc -n {workshop_namespace}
+----
+
+NOTE: Because `linbit-rwo-locality` uses `volumeBindingMode: WaitForFirstConsumer`, the PVC stays `Pending` until a pod references it.
+This is by design -- LINSTOR delays provisioning to co-locate the primary replica with the consumer pod.
+
+Create a consumer pod to trigger binding:
+
+[source,bash,role=execute]
+----
+cat <<'EOF' | oc apply -f -
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test-pvc-consumer
+  namespace: {workshop_namespace}
+spec:
+  containers:
+    - name: consumer
+      image: registry.access.redhat.com/ubi9/ubi-minimal:latest
+      command: ["sleep", "300"]
+      volumeMounts:
+        - name: data
+          mountPath: /data
+  volumes:
+    - name: data
+      persistentVolumeClaim:
+        claimName: test-linstor-pvc
+EOF
+----
+
 Watch the PVC bind:
 
 [source,bash,role=execute]
@@ -143,10 +178,11 @@ Identify which nodes hold *diskful* replicas (InUse or UpToDate) and which are *
 
 == Step 7: Clean Up
 
-Delete the test PVC:
+Delete the test resources:
 
 [source,bash,role=execute]
 ----
+oc delete pod test-pvc-consumer -n {workshop_namespace} --grace-period=0
 oc delete pvc test-linstor-pvc -n {workshop_namespace}
 ----
 

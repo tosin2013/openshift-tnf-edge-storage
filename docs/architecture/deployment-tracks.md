@@ -35,25 +35,39 @@ This workshop ships **shared** LINBIT SDS + Showroom content on two different cl
 
 TNF depends on out-of-band **Redfish** power control. AWS EC2 does not expose BMCs to the guest OS. Without fencing, a two-node partition risks split-brain. TNA restores Raft majority with a cheap third vote.
 
-### Suggested AWS sizing (starting point)
+### AWS sizing (Option B — Comfortable)
 
-| Role | Example instance | Notes |
-|------|------------------|-------|
-| TNA primary | `m5.4xlarge` (16 vCPU / 64 GiB) | Control plane + workloads + LINSTOR satellites |
-| TNA arbiter | `t3.small` (or ≥ 2 vCPU / 8 GiB if required by platform docs) | etcd + optional diskless LINSTOR satellite; no EBS data pool |
-| Compact node | `m5.2xlarge` minimum; `m5.4xlarge` recommended | Combined master/worker |
+| Role | Instance type | vCPU | RAM | EBS | $/hr |
+|------|---------------|------|-----|-----|------|
+| TNA CP (×2) | `m7a.4xlarge` | 16 | 64 GiB | 120 GB root + 100 GB data (gp3) | $0.922 |
+| TNA arbiter (×1) | `m7a.xlarge` | 4 | 16 GiB | 50 GB root (gp3) | $0.230 |
 
-Attach unformatted secondary EBS volumes for LINSTOR storage pools. Prefer multi-AZ placement for diskful replicas and use LINSTOR AuxProps / `xReplicasOnDifferent` with `topology.kubernetes.io/zone` so replicas do not land in one AZ.
+**Per-student cost:** ~$2.16/hr / ~$52/day (39% savings vs legacy 6-node IPI at ~$85/day).
 
-### Provisioning flow
+CP nodes run both control-plane components and workloads (LINSTOR satellites, PostgreSQL, KubeVirt VMs).
+Arbiter runs etcd only (+ diskless LINSTOR tiebreaker) — no general workloads scheduled.
+Secondary EBS on CP nodes is the LINSTOR LVMThin storage pool (`/dev/xvdb` → `/dev/nvme1n1`).
+
+### Provisioning flow (agent-based, default)
 
 ```text
-AgnosticD (AWS TNA or Compact, OCP 4.22+)
+deploy.sh Phase 3
+  → deploy-tna.sh per student
+      → CloudFormation (VPC + 3 EC2 + NLB + Route53)
+      → openshift-install agent create image (ISO)
+      → ISO → S3 → AMI import → boot EC2
+      → openshift-install agent wait-for install-complete
+      → post-install: labels, taints, workloads
+```
+
+### Legacy provisioning flow (IPI, set STUDENT_DEPLOY_METHOD=ipi)
+
+```text
+AgnosticD (AWS IPI, OCP 4.22+)
+    → ocp4_workload_linbit_storage_nodes (MachineSet manipulation)
     → Field Content / ArgoCD
         → LINSTOR Operator + StorageClasses + Showroom
 ```
-
-Document `ocp4_workload_field_content_gitops_repo_url` pointing at this repository once the Helm chart is scaffolded.
 
 ### Replication protocol notes (AWS)
 

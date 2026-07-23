@@ -2,11 +2,19 @@ apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
   name: {{ .Values.rwoLocality.name }}
+  {{- if .Values.rwoLocality.isDefault }}
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+  {{- end }}
 provisioner: linstor.csi.linbit.com
 parameters:
   autoPlace: "{{ .Values.rwoLocality.replicaCount }}"
   storagePool: {{ .Values.rwoLocality.storagePool }}
   csi.storage.k8s.io/fstype: {{ .Values.rwoLocality.fsType }}
+  {{- if .Values.rwoLocality.quorum }}
+  property.linstor.csi.linbit.com/DrbdOptions/auto-quorum: {{ .Values.rwoLocality.quorum | quote }}
+  property.linstor.csi.linbit.com/DrbdOptions/Resource/on-no-quorum: {{ .Values.rwoLocality.onNoQuorum | quote }}
+  {{- end }}
 volumeBindingMode: WaitForFirstConsumer
 reclaimPolicy: Delete
 allowVolumeExpansion: true
@@ -21,6 +29,10 @@ parameters:
   storagePool: {{ .Values.rwxVirt.storagePool }}
   {{- if .Values.rwxVirt.allowTwoPrimaries }}
   property.linstor.csi.linbit.com/DrbdOptions/Net/allow-two-primaries: "yes"
+  {{- end }}
+  {{- if .Values.rwxVirt.quorum }}
+  property.linstor.csi.linbit.com/DrbdOptions/auto-quorum: {{ .Values.rwxVirt.quorum | quote }}
+  property.linstor.csi.linbit.com/DrbdOptions/Resource/on-no-quorum: {{ .Values.rwxVirt.onNoQuorum | quote }}
   {{- end }}
 volumeBindingMode: Immediate
 reclaimPolicy: Delete
