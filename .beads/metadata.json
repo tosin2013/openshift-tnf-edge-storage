@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "openshift_tnf_edge_storage",
+  "project_id": "0761b046-b3ff-4843-93a5-1964dec831be"
+}
