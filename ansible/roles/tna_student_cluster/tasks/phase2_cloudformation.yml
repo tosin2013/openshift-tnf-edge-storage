@@ -1,0 +1,96 @@
+---
+# Phase 2: CloudFormation — provision VPC + EC2 + NLB + DNS
+
+- name: Check if CloudFormation stack already exists
+  amazon.aws.cloudformation_info:
+    stack_name: "{{ tna_stack_name }}"
+    region: "{{ tna_aws_region }}"
+  register: _cfn_check
+  ignore_errors: true
+
+- name: Set stack existence flag
+  ansible.builtin.set_fact:
+    _stack_exists: >-
+      {{ _cfn_check is not failed
+         and _cfn_check.cloudformation | default({}) | length > 0
+         and (_cfn_check.cloudformation[tna_stack_name].stack_description.stack_status | default(''))
+             in ['CREATE_COMPLETE', 'UPDATE_COMPLETE'] }}
+    _stack_failed: >-
+      {{ _cfn_check is not failed
+         and _cfn_check.cloudformation | default({}) | length > 0
+         and (_cfn_check.cloudformation[tna_stack_name].stack_description.stack_status | default(''))
+             in ['ROLLBACK_COMPLETE', 'CREATE_FAILED', 'DELETE_FAILED'] }}
+
+- name: Delete failed stack before re-create
+  amazon.aws.cloudformation:
+    stack_name: "{{ tna_stack_name }}"
+    state: absent
+    region: "{{ tna_aws_region }}"
+  when: _stack_failed | bool
+
+- name: Deploy CloudFormation stack (new)
+  amazon.aws.cloudformation:
+    stack_name: "{{ tna_stack_name }}"
+    state: present
+    region: "{{ tna_aws_region }}"
+    template: "{{ tna_cfn_template }}"
+    capabilities:
+      - CAPABILITY_NAMED_IAM
+    template_parameters:
+      ClusterName: "{{ tna_cluster_name }}"
+      BaseDomain: "{{ tna_base_domain }}"
+      HostedZoneId: "{{ tna_hosted_zone_id }}"
+      AmiId: "{{ tna_agent_ami_id }}"
+      CPInstanceType: "{{ tna_cp_instance_type }}"
+      ArbiterInstanceType: "{{ tna_arbiter_instance_type }}"
+      Owner: "{{ tna_owner }}"
+      VpcCidr: "{{ tna_machine_cidr }}"
+      SubnetCidr: "{{ tna_subnet_cidr }}"
+    tags:
+      owner: "{{ tna_owner }}"
+      guid: "{{ tna_cluster_name }}"
+      Purpose: linbit-workshop-student
+  register: _cfn_stack_new
+  when: not (_stack_exists | bool)
+
+- name: Extract outputs from new stack
+  ansible.builtin.set_fact:
+    _cfn_outputs: "{{ _cfn_stack_new.stack_outputs }}"
+  when: not (_stack_exists | bool)
+
+- name: Extract outputs from existing stack
+  ansible.builtin.set_fact:
+    _cfn_outputs: "{{ _cfn_check.cloudformation[tna_stack_name].stack_outputs }}"
+  when: _stack_exists | bool
+
+- name: Set stack output facts
+  ansible.builtin.set_fact:
+    tna_cp0_id: "{{ _cfn_outputs.ControlPlane0InstanceId }}"
+    tna_cp1_id: "{{ _cfn_outputs.ControlPlane1InstanceId }}"
+    tna_arb_id: "{{ _cfn_outputs.Arbiter0InstanceId }}"
+    tna_cp0_ip: "{{ _cfn_outputs.ControlPlane0PrivateIp }}"
+    tna_cp1_ip: "{{ _cfn_outputs.ControlPlane1PrivateIp }}"
+    tna_arb_ip: "{{ _cfn_outputs.Arbiter0PrivateIp }}"
+    tna_api_url: "{{ _cfn_outputs.APIURL }}"
+    tna_console_url: "{{ _cfn_outputs.ConsoleURL }}"
+
+- name: Display instance info
+  ansible.builtin.debug:
+    msg: >-
+      Instance IDs: CP0={{ tna_cp0_id }} CP1={{ tna_cp1_id }} ARB={{ tna_arb_id }}
+      | Private IPs: CP0={{ tna_cp0_ip }} CP1={{ tna_cp1_ip }} ARB={{ tna_arb_ip }}
+      | API: {{ tna_api_url }}
+
+# NLB hairpin workaround: api-int must resolve to CP private IPs directly
+- name: Fix api-int DNS (NLB hairpin workaround)
+  amazon.aws.route53:
+    zone: "{{ tna_base_domain }}"
+    record: "api-int.{{ tna_cluster_name }}.{{ tna_base_domain }}"
+    type: A
+    ttl: 30
+    value:
+      - "{{ tna_cp0_ip }}"
+      - "{{ tna_cp1_ip }}"
+    overwrite: true
+    state: present
+    wait: true

@@ -1,0 +1,20 @@
+---
+apiVersion: piraeus.io/v1
+kind: LinstorSatelliteConfiguration
+metadata:
+  name: storage-pool-config
+  namespace: {{ tna_linstor_namespace }}
+spec:
+  nodeSelector:
+    linbit.com/storage-role: primary
+  podTemplate:
+    spec:
+      imagePullSecrets:
+        - name: drbdio-pull-secret
+  storagePools:
+    - name: lvm-thin
+      lvmThinPool:
+        volumeGroup: linstor_lvm-thin
+      source:
+        hostDevices:
+          - {{ tna_linstor_storage_device }}

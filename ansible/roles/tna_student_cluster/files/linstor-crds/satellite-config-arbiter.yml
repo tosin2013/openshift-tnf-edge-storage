@@ -1,0 +1,13 @@
+---
+apiVersion: piraeus.io/v1
+kind: LinstorSatelliteConfiguration
+metadata:
+  name: arbiter-config
+  namespace: linbit-sds
+spec:
+  nodeSelector:
+    linbit.com/storage-role: arbiter
+  podTemplate:
+    spec:
+      imagePullSecrets:
+        - name: drbdio-pull-secret

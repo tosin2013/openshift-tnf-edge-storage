@@ -1,0 +1,236 @@
+---
+# Phase 1: Generate agent ISO and create/reuse AMI
+
+- name: Clean previous ISO build directory
+  ansible.builtin.file:
+    path: "{{ tna_assets_dir }}/iso-build"
+    state: absent
+
+- name: Create ISO build directory
+  ansible.builtin.file:
+    path: "{{ tna_assets_dir }}/iso-build"
+    state: directory
+    mode: "0755"
+
+- name: Render install-config.yaml
+  ansible.builtin.template:
+    src: install-config.yaml.j2
+    dest: "{{ tna_assets_dir }}/iso-build/install-config.yaml"
+    mode: "0644"
+
+- name: Render agent-config.yaml
+  ansible.builtin.template:
+    src: agent-config.yaml.j2
+    dest: "{{ tna_assets_dir }}/iso-build/agent-config.yaml"
+    mode: "0644"
+
+- name: Generate agent ISO (produces local state files)
+  ansible.builtin.command:
+    cmd: openshift-install agent create image --dir "{{ tna_assets_dir }}/iso-build" --log-level info
+  register: _iso_result
+  changed_when: true
+
+- name: Verify ISO was generated
+  ansible.builtin.stat:
+    path: "{{ tna_assets_dir }}/iso-build/agent.x86_64.iso"
+  register: _iso_stat
+  failed_when: not _iso_stat.stat.exists
+
+# Check for cached AMI
+- name: Look for cached agent AMI
+  amazon.aws.ec2_ami_info:
+    region: "{{ tna_aws_region }}"
+    owners: ["self"]
+    filters:
+      "tag:ocp-version": "{{ tna_ocp_version }}"
+      "tag:purpose": "linbit-agent-iso"
+  register: _cached_amis
+
+- name: Set cached AMI fact
+  ansible.builtin.set_fact:
+    tna_agent_ami_id: >-
+      {{ (_cached_amis.images | sort(attribute='creation_date') | last).image_id
+         if _cached_amis.images | length > 0
+         else '' }}
+
+- name: Build AMI from ISO (when no cache exists)
+  when: tna_agent_ami_id | length == 0
+  block:
+    - name: Ensure S3 bucket exists
+      amazon.aws.s3_bucket:
+        name: "{{ tna_s3_bucket }}"
+        region: "{{ tna_aws_region }}"
+        state: present
+
+    - name: Check vmimport IAM role exists
+      amazon.aws.iam_role_info:
+        name: vmimport
+      register: _vmimport_role
+      ignore_errors: true
+
+    - name: Create vmimport IAM role
+      when: _vmimport_role.iam_roles | default([]) | length == 0
+      block:
+        - name: Create vmimport role
+          amazon.aws.iam_role:
+            name: vmimport
+            state: present
+            assume_role_policy_document:
+              Version: "2012-10-17"
+              Statement:
+                - Effect: Allow
+                  Principal:
+                    Service: vmie.amazonaws.com
+                  Action: "sts:AssumeRole"
+                  Condition:
+                    StringEquals:
+                      "sts:Externalid": vmimport
+
+        - name: Attach vmimport inline policy
+          amazon.aws.iam_policy:
+            iam_type: role
+            iam_name: vmimport
+            policy_name: vmimport
+            state: present
+            policy_json:
+              Version: "2012-10-17"
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - "s3:GetBucketLocation"
+                    - "s3:GetObject"
+                    - "s3:ListBucket"
+                  Resource:
+                    - "arn:aws:s3:::{{ tna_s3_bucket }}"
+                    - "arn:aws:s3:::{{ tna_s3_bucket }}/*"
+                - Effect: Allow
+                  Action:
+                    - "ec2:ModifySnapshotAttribute"
+                    - "ec2:CopySnapshot"
+                    - "ec2:RegisterImage"
+                    - "ec2:Describe*"
+                  Resource: "*"
+
+    - name: Convert ISO to raw disk image
+      ansible.builtin.copy:
+        src: "{{ tna_assets_dir }}/iso-build/agent.x86_64.iso"
+        dest: "{{ tna_assets_dir }}/iso-build/agent.raw"
+        remote_src: true
+        mode: "0644"
+
+    - name: Pad raw image to 16 GB
+      ansible.builtin.command:
+        cmd: "truncate -s 16G {{ tna_assets_dir }}/iso-build/agent.raw"
+      changed_when: true
+
+    - name: Upload raw image to S3
+      amazon.aws.s3_object:
+        bucket: "{{ tna_s3_bucket }}"
+        object: "agent-iso/agent-{{ tna_ocp_version }}-{{ tna_cluster_name }}.raw"
+        src: "{{ tna_assets_dir }}/iso-build/agent.raw"
+        mode: put
+        region: "{{ tna_aws_region }}"
+      register: _s3_upload
+
+    - name: Build snapshot import container JSON
+      ansible.builtin.set_fact:
+        _snap_disk_container: >-
+          {{ {'Description': 'agent-iso', 'Format': 'RAW',
+              'UserBucket': {'S3Bucket': tna_s3_bucket,
+                             'S3Key': 'agent-iso/agent-' + tna_ocp_version + '-' + tna_cluster_name + '.raw'}}
+             | to_json }}
+
+    - name: Import snapshot from S3
+      ansible.builtin.command:
+        cmd: >-
+          aws ec2 import-snapshot
+          --region {{ tna_aws_region }}
+          --description "LINBIT Agent ISO OCP {{ tna_ocp_version }}"
+          --disk-container '{{ _snap_disk_container }}'
+          --query ImportTaskId
+          --output text
+      register: _snap_import
+      changed_when: true
+
+    - name: Wait for snapshot import to complete
+      ansible.builtin.command:
+        cmd: >-
+          aws ec2 describe-import-snapshot-tasks
+          --region {{ tna_aws_region }}
+          --import-task-ids {{ _snap_import.stdout | trim }}
+          --query 'ImportSnapshotTasks[0].SnapshotTaskDetail'
+          --output json
+      register: _snap_status
+      until: (_snap_status.stdout | from_json).Status == 'completed'
+      retries: 60
+      delay: 30
+      changed_when: false
+
+    - name: Extract snapshot ID
+      ansible.builtin.set_fact:
+        _snapshot_id: "{{ (_snap_status.stdout | from_json).SnapshotId }}"
+
+    - name: Build AMI name and block device mapping
+      ansible.builtin.set_fact:
+        _ami_name: >-
+          linbit-agent-ocp{{ tna_ocp_version }}-{{
+            ansible_date_time.date | replace('-', '')
+          }}{{ ansible_date_time.hour }}{{ ansible_date_time.minute }}
+        _ami_bdm: >-
+          {{ [{'DeviceName': '/dev/sda1',
+               'Ebs': {'SnapshotId': _snapshot_id,
+                        'VolumeSize': 16,
+                        'VolumeType': 'gp3',
+                        'DeleteOnTermination': true}}]
+             | to_json }}
+
+    - name: Register AMI from snapshot
+      ansible.builtin.command:
+        cmd: >-
+          aws ec2 register-image
+          --region {{ tna_aws_region }}
+          --name "{{ _ami_name | trim }}"
+          --description "LINBIT Agent-based Installer OCP {{ tna_ocp_version }}"
+          --architecture x86_64
+          --root-device-name /dev/sda1
+          --virtualization-type hvm
+          --ena-support
+          --boot-mode uefi-preferred
+          --block-device-mappings '{{ _ami_bdm | trim }}'
+          --query ImageId
+          --output text
+      register: _ami_register
+      changed_when: true
+
+    - name: Set AMI ID fact
+      ansible.builtin.set_fact:
+        tna_agent_ami_id: "{{ _ami_register.stdout | trim }}"
+
+    - name: Tag AMI and snapshot
+      amazon.aws.ec2_tag:
+        region: "{{ tna_aws_region }}"
+        resource: "{{ item }}"
+        tags:
+          ocp-version: "{{ tna_ocp_version }}"
+          purpose: linbit-agent-iso
+          Name: "linbit-agent-ocp{{ tna_ocp_version }}"
+      loop:
+        - "{{ tna_agent_ami_id }}"
+        - "{{ _snapshot_id }}"
+
+    - name: Clean up local raw image
+      ansible.builtin.file:
+        path: "{{ tna_assets_dir }}/iso-build/agent.raw"
+        state: absent
+
+    - name: Clean up S3 object
+      amazon.aws.s3_object:
+        bucket: "{{ tna_s3_bucket }}"
+        object: "agent-iso/agent-{{ tna_ocp_version }}-{{ tna_cluster_name }}.raw"
+        mode: delobj
+        region: "{{ tna_aws_region }}"
+      ignore_errors: true
+
+- name: Display AMI result
+  ansible.builtin.debug:
+    msg: "Agent AMI: {{ tna_agent_ami_id }}"

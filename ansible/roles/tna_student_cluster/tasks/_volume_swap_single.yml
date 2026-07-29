@@ -1,0 +1,94 @@
+---
+# Volume swap for a single instance. Called in a loop from phase5a.
+# _instance.id = EC2 instance ID
+# _instance.label = human-readable label
+
+- name: "{{ _instance.label }} — list attached volumes"
+  amazon.aws.ec2_vol_info:
+    region: "{{ tna_aws_region }}"
+    filters:
+      attachment.instance-id: "{{ _instance.id }}"
+  register: _volumes
+
+- name: "{{ _instance.label }} — identify root and RHCOS volumes"
+  ansible.builtin.set_fact:
+    _old_root_vol: ""
+    _rhcos_vol: ""
+
+- name: "{{ _instance.label }} — find root volume"
+  ansible.builtin.set_fact:
+    _old_root_vol: "{{ item.id }}"
+  loop: "{{ _volumes.volumes }}"
+  when: >-
+    item.attachment_set | default([])
+    | selectattr('device', 'in', ['/dev/sda1', '/dev/xvda'])
+    | list | length > 0
+
+- name: "{{ _instance.label }} — find RHCOS volume (/dev/xvdb)"
+  ansible.builtin.set_fact:
+    _rhcos_vol: "{{ item.id }}"
+  loop: "{{ _volumes.volumes }}"
+  when: >-
+    item.attachment_set | default([])
+    | selectattr('device', 'eq', '/dev/xvdb')
+    | list | length > 0
+
+- name: "{{ _instance.label }} — fail if RHCOS volume not found"
+  ansible.builtin.fail:
+    msg: "Cannot find RHCOS volume (/dev/xvdb) on {{ _instance.label }}"
+  when: _rhcos_vol | length == 0
+
+- name: "{{ _instance.label }} — display volumes"
+  ansible.builtin.debug:
+    msg: "root={{ _old_root_vol }} rhcos={{ _rhcos_vol }}"
+
+- name: "{{ _instance.label }} — detach original root volume"
+  ansible.builtin.command:
+    cmd: >-
+      aws ec2 detach-volume --region {{ tna_aws_region }}
+      --volume-id {{ _old_root_vol }} --force
+  when: _old_root_vol | length > 0
+  ignore_errors: true
+  changed_when: true
+
+- name: "{{ _instance.label }} — detach RHCOS volume"
+  ansible.builtin.command:
+    cmd: >-
+      aws ec2 detach-volume --region {{ tna_aws_region }}
+      --volume-id {{ _rhcos_vol }} --force
+  changed_when: true
+  ignore_errors: true
+
+- name: "{{ _instance.label }} — wait for volumes to detach"
+  ansible.builtin.pause:
+    seconds: 10
+
+- name: "{{ _instance.label }} — attach RHCOS volume as /dev/sda1"
+  ansible.builtin.command:
+    cmd: >-
+      aws ec2 attach-volume --region {{ tna_aws_region }}
+      --instance-id {{ _instance.id }}
+      --volume-id {{ _rhcos_vol }}
+      --device /dev/sda1
+  changed_when: true
+
+- name: "{{ _instance.label }} — wait for RHCOS volume to attach"
+  amazon.aws.ec2_vol_info:
+    region: "{{ tna_aws_region }}"
+    filters:
+      volume-id: "{{ _rhcos_vol }}"
+  register: _attach_check
+  until: >-
+    _attach_check.volumes | length > 0
+    and _attach_check.volumes[0].attachment_set | default([]) | length > 0
+    and (_attach_check.volumes[0].attachment_set[0].status | default('')) == 'attached'
+  retries: 30
+  delay: 2
+
+- name: "{{ _instance.label }} — delete old ISO root volume"
+  amazon.aws.ec2_vol:
+    id: "{{ _old_root_vol }}"
+    region: "{{ tna_aws_region }}"
+    state: absent
+  when: _old_root_vol | length > 0
+  ignore_errors: true

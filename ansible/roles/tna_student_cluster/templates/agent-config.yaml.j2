@@ -1,0 +1,21 @@
+---
+apiVersion: v1beta1
+metadata:
+  name: {{ tna_cluster_name }}
+rendezvousIP: {{ tna_rendezvous_ip }}
+hosts:
+  - hostname: master-0
+    role: master
+    interfaces:
+      - name: enX0
+        macAddress: 00:00:00:00:00:01
+  - hostname: master-1
+    role: master
+    interfaces:
+      - name: enX0
+        macAddress: 00:00:00:00:00:02
+  - hostname: arbiter-0
+    role: arbiter
+    interfaces:
+      - name: enX0
+        macAddress: 00:00:00:00:00:03

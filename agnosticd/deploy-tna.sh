@@ -178,27 +178,15 @@ ensure_vmimport_role() {
   fi
 }
 
-# Check for cached AMI tagged with our OCP version
-AGENT_AMI_ID=""
-CACHED_AMI="$(aws ec2 describe-images --region "$AWS_REGION" --owners self \
-  --filters "Name=tag:ocp-version,Values=${OCP_VERSION}" "Name=tag:purpose,Values=linbit-agent-iso" \
-  --query 'Images | sort_by(@, &CreationDate) | [-1].ImageId' --output text 2>/dev/null || true)"
+# Always regenerate ISO to produce the .openshift_install_state.json
+# that openshift-install agent wait-for needs. The AMI is only built
+# when no cached version exists.
 
-if [[ -n "$CACHED_AMI" && "$CACHED_AMI" != "None" ]]; then
-  info "Reusing cached agent AMI: $CACHED_AMI (OCP ${OCP_VERSION})"
-  AGENT_AMI_ID="$CACHED_AMI"
-else
-  info "No cached AMI found for OCP ${OCP_VERSION}. Building agent ISO ..."
+ISO_BUILD_DIR="${ASSETS_DIR}/iso-build"
+rm -rf "$ISO_BUILD_DIR"
+mkdir -p "$ISO_BUILD_DIR"
 
-  # Render install-config and agent-config for ISO generation.
-  # The ISO is generic (no node-specific MACs) — we re-render configs
-  # after CFN stack is up with real IPs/MACs.
-  ISO_BUILD_DIR="${ASSETS_DIR}/iso-build"
-  rm -rf "$ISO_BUILD_DIR"
-  mkdir -p "$ISO_BUILD_DIR"
-
-  # install-config for TNA (Two-Node with Arbiter)
-  cat > "${ISO_BUILD_DIR}/install-config.yaml" <<INSTALLEOF
+cat > "${ISO_BUILD_DIR}/install-config.yaml" <<INSTALLEOF
 apiVersion: v1
 metadata:
   name: ${CLUSTER_NAME}
@@ -233,8 +221,7 @@ pullSecret: '${PULL_SECRET}'
 sshKey: '${SSH_KEY}'
 INSTALLEOF
 
-  # agent-config with 3 hosts: 2 masters + 1 arbiter
-  cat > "${ISO_BUILD_DIR}/agent-config.yaml" <<AGENTEOF
+cat > "${ISO_BUILD_DIR}/agent-config.yaml" <<AGENTEOF
 apiVersion: v1beta1
 metadata:
   name: ${CLUSTER_NAME}
@@ -257,31 +244,36 @@ hosts:
         macAddress: 00:00:00:00:00:03
 AGENTEOF
 
-  info "Generating agent ISO ..."
-  openshift-install agent create image --dir "$ISO_BUILD_DIR" --log-level info
+info "Generating agent ISO (produces local state files) ..."
+openshift-install agent create image --dir "$ISO_BUILD_DIR" --log-level info
 
-  ISO_PATH="${ISO_BUILD_DIR}/agent.x86_64.iso"
-  [[ -f "$ISO_PATH" ]] || fail "Agent ISO not generated at $ISO_PATH"
+ISO_PATH="${ISO_BUILD_DIR}/agent.x86_64.iso"
+[[ -f "$ISO_PATH" ]] || fail "Agent ISO not generated at $ISO_PATH"
+
+# Check for cached AMI tagged with our OCP version
+AGENT_AMI_ID=""
+CACHED_AMI="$(aws ec2 describe-images --region "$AWS_REGION" --owners self \
+  --filters "Name=tag:ocp-version,Values=${OCP_VERSION}" "Name=tag:purpose,Values=linbit-agent-iso" \
+  --query 'Images | sort_by(@, &CreationDate) | [-1].ImageId' --output text 2>/dev/null || true)"
+
+if [[ -n "$CACHED_AMI" && "$CACHED_AMI" != "None" ]]; then
+  info "Reusing cached agent AMI: $CACHED_AMI (OCP ${OCP_VERSION})"
+  AGENT_AMI_ID="$CACHED_AMI"
+else
+  info "No cached AMI — uploading to S3 and importing as EBS snapshot ..."
 
   ensure_s3_bucket
   ensure_vmimport_role
 
-  # Convert ISO to raw disk image — AWS import-snapshot needs a disk
-  # format, not ISO 9660. The agent ISO is a hybrid image that can be
-  # written directly to a disk.
   RAW_PATH="${ISO_BUILD_DIR}/agent.raw"
   info "Converting ISO to raw disk image ..."
   cp "$ISO_PATH" "$RAW_PATH"
-  # Pad to 16 GiB so the root volume has enough space for the
-  # in-place CoreOS install that the agent-based installer performs.
   truncate -s 16G "$RAW_PATH"
 
   S3_KEY="agent-iso/agent-${OCP_VERSION}-${CLUSTER_NAME}.raw"
   info "Uploading raw image to s3://${S3_BUCKET}/${S3_KEY} ..."
   aws s3 cp "$RAW_PATH" "s3://${S3_BUCKET}/${S3_KEY}" --region "$AWS_REGION"
 
-  # Use import-snapshot (not import-image) — it does not try to detect
-  # an OS, which avoids the "Unknown OS / Missing OS files" error.
   info "Importing raw image as EBS snapshot (10-20 min) ..."
   SNAP_IMPORT_ID="$(aws ec2 import-snapshot --region "$AWS_REGION" \
     --description "LINBIT Agent ISO OCP ${OCP_VERSION}" \
@@ -314,7 +306,6 @@ AGENTEOF
 
   ok "Snapshot created: $SNAPSHOT_ID"
 
-  # Register an AMI from the snapshot
   info "Registering AMI from snapshot ..."
   AGENT_AMI_ID="$(aws ec2 register-image --region "$AWS_REGION" \
     --name "linbit-agent-ocp${OCP_VERSION}-$(date +%Y%m%d%H%M)" \
@@ -327,13 +318,11 @@ AGENTEOF
     --block-device-mappings "[{\"DeviceName\":\"/dev/sda1\",\"Ebs\":{\"SnapshotId\":\"${SNAPSHOT_ID}\",\"VolumeSize\":16,\"VolumeType\":\"gp3\",\"DeleteOnTermination\":true}}]" \
     --query 'ImageId' --output text)"
 
-  # Tag for reuse
   aws ec2 create-tags --region "$AWS_REGION" --resources "$AGENT_AMI_ID" "$SNAPSHOT_ID" \
     --tags Key=ocp-version,Value="${OCP_VERSION}" Key=purpose,Value=linbit-agent-iso Key=Name,Value="linbit-agent-ocp${OCP_VERSION}"
 
   ok "Agent AMI created: $AGENT_AMI_ID (snapshot: $SNAPSHOT_ID)"
 
-  # Clean up S3 object (raw image is large)
   rm -f "$RAW_PATH"
   aws s3 rm "s3://${S3_BUCKET}/${S3_KEY}" --region "$AWS_REGION" 2>/dev/null || true
 fi
@@ -392,6 +381,22 @@ info "Instance IDs: CP0=$CP0_ID CP1=$CP1_ID ARB=$ARB_ID"
 info "Private IPs:  CP0=$CP0_IP CP1=$CP1_IP ARB=$ARB_IP"
 info "API URL:      $API_URL"
 
+# Fix NLB hairpin: api-int must resolve to CP private IPs directly.
+# Internal nodes can't reach the NLB when they are in its target group.
+info "Fixing api-int DNS (NLB hairpin workaround) ..."
+aws route53 change-resource-record-sets --hosted-zone-id "$HOSTED_ZONE_ID" --change-batch "{
+  \"Changes\": [{
+    \"Action\": \"UPSERT\",
+    \"ResourceRecordSet\": {
+      \"Name\": \"api-int.${CLUSTER_NAME}.${BASE_DOMAIN}.\",
+      \"Type\": \"A\",
+      \"TTL\": 30,
+      \"ResourceRecords\": [{\"Value\": \"${CP0_IP}\"}, {\"Value\": \"${CP1_IP}\"}]
+    }
+  }]
+}" >/dev/null
+ok "api-int now points to CP0/CP1 private IPs."
+
 # =================================================================
 # Phase 3: Verify host registration (generic ISO is sufficient)
 # =================================================================
@@ -425,15 +430,15 @@ EOF
 WAIT_DIR="${ASSETS_DIR}/iso-build"
 
 # =================================================================
-# Phase 4: Wait for coreos-installer, then volume swap
+# Phase 4: Wait for coreos-installer completion
 # =================================================================
-# On EC2, the instance always boots from /dev/sda1 (the root device).
-# coreos-installer writes RHCOS to the second disk (/dev/xvdb → nvme1n1).
-# After writing, nodes reboot — but boot BACK into the ISO.
-# We must: detect write complete → stop instances → swap disks → restart.
+# coreos-installer writes RHCOS to /dev/xvdb (nvme1n1, the only disk >= 100GB
+# that isn't the root device). The LINSTOR volume (/dev/xvdc, 50GB) is below
+# the 100GB minimum and won't be selected by the installer.
+# After install, stop instances, swap xvdb to sda1, and restart.
 
 info "============================================================"
-info "Phase 4: Monitor install + post-write volume swap"
+info "Phase 4: Monitor coreos-installer progress"
 info "============================================================"
 
 SSH_KEY_PRIV="${SSH_KEY_PATH%.pub}"
@@ -456,7 +461,7 @@ done
 
 # Retrieve auth token and IDs from the rendezvous host
 AUTH_TOKEN="$(ssh -o StrictHostKeyChecking=no -i "$SSH_KEY_PRIV" core@"$CP0_PUBLIC_IP" \
-  'grep USER_AUTH_TOKEN /etc/assisted/rendezvous-host.env | cut -d= -f2')"
+  'sudo grep USER_AUTH_TOKEN /etc/assisted/rendezvous-host.env | cut -d= -f2')"
 
 INFRA_ENV_ID="$(ssh -o StrictHostKeyChecking=no -i "$SSH_KEY_PRIV" core@"$CP0_PUBLIC_IP" \
   "curl -s http://10.0.1.10:8090/api/assisted-install/v2/infra-envs -H 'Authorization: ${AUTH_TOKEN}' | jq -r '.[0].id'")"
@@ -532,12 +537,57 @@ done
 [[ "$WRITE_COMPLETE" == "true" ]] || fail "Timeout waiting for coreos-installer to finish"
 ok "coreos-installer completed on all hosts."
 
-# Wait for instances to finish rebooting back into ISO
-info "Waiting 60s for reboot cycle to complete ..."
-sleep 60
+# =================================================================
+# Phase 5: Wait for full OpenShift install on the ISO, then swap
+# =================================================================
+# After coreos-installer, nodes reboot into the ISO again (on AWS
+# the root device sda1 is still the ISO). The assisted-service on
+# the rendezvous host (CP0) orchestrates the full bootstrap and
+# install. We monitor via SSH tunnel, THEN do the volume swap.
 
-# Post-install volume swap: move RHCOS disk to root device position
-info "Stopping instances for post-install volume swap ..."
+info "============================================================"
+info "Phase 5: Waiting for OpenShift install (via SSH tunnel)"
+info "============================================================"
+
+info "Polling cluster install status via assisted-service ..."
+INSTALL_COMPLETE=false
+for _wait in $(seq 1 360); do  # 60 min max
+  CLUSTER_STATUS="$(ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 \
+    -i "$SSH_KEY_PRIV" core@"$CP0_PUBLIC_IP" \
+    "curl -sf http://10.0.1.10:8090/api/assisted-install/v2/clusters \
+    -H 'Authorization: ${AUTH_TOKEN}'" 2>/dev/null | jq -r '.[0].status // "unknown"' 2>/dev/null || echo "unreachable")"
+
+  case "$CLUSTER_STATUS" in
+    installed)
+      ok "Cluster installation completed!"
+      INSTALL_COMPLETE=true
+      break
+      ;;
+    error)
+      fail "Cluster installation failed. Check assisted-service logs."
+      ;;
+    unreachable)
+      info "  Status: rendezvous host unreachable (may be rebooting) ..."
+      ;;
+    *)
+      info "  Status: $CLUSTER_STATUS"
+      ;;
+  esac
+  sleep 10
+done
+
+[[ "$INSTALL_COMPLETE" == "true" ]] || fail "Timeout waiting for cluster installation"
+
+# =================================================================
+# Phase 5b: Post-install volume swap
+# =================================================================
+# Now that the install is complete, swap the RHCOS volumes to root.
+
+info "============================================================"
+info "Phase 5b: Post-install volume swap"
+info "============================================================"
+
+info "Stopping instances for volume swap ..."
 aws ec2 stop-instances --region "$AWS_REGION" \
   --instance-ids "$CP0_ID" "$CP1_ID" "$ARB_ID" >/dev/null
 aws ec2 wait instance-stopped --region "$AWS_REGION" \
@@ -550,14 +600,12 @@ post_install_swap() {
 
   info "  Swapping volumes on $label ($instance_id) ..."
 
-  # Find current root volume (/dev/sda1 or /dev/xvda — the old ISO)
   local old_root_vol
   old_root_vol="$(aws ec2 describe-volumes --region "$AWS_REGION" \
     --filters "Name=attachment.instance-id,Values=$instance_id" \
     --query 'Volumes[?Attachments[0].Device==`/dev/sda1` || Attachments[0].Device==`/dev/xvda`].VolumeId' \
     --output text | head -1)"
 
-  # Find the RHCOS volume (/dev/xvdb — where coreos-installer wrote)
   local rhcos_vol
   rhcos_vol="$(aws ec2 describe-volumes --region "$AWS_REGION" \
     --filters "Name=attachment.instance-id,Values=$instance_id" \
@@ -568,24 +616,17 @@ post_install_swap() {
     fail "Cannot find RHCOS volume (/dev/xvdb) on $label"
   fi
 
-  # Detach old root (ISO)
   if [[ -n "$old_root_vol" && "$old_root_vol" != "None" ]]; then
     aws ec2 detach-volume --region "$AWS_REGION" --volume-id "$old_root_vol" --force >/dev/null 2>&1 || true
   fi
-
-  # Detach RHCOS volume from /dev/xvdb
   aws ec2 detach-volume --region "$AWS_REGION" --volume-id "$rhcos_vol" --force >/dev/null 2>&1 || true
+  sleep 10
 
-  # Wait for both to detach
-  sleep 8
-
-  # Attach RHCOS volume as root device (/dev/sda1)
   aws ec2 attach-volume --region "$AWS_REGION" \
     --instance-id "$instance_id" \
     --volume-id "$rhcos_vol" \
     --device /dev/sda1 >/dev/null
 
-  # Wait for attachment
   for _ in $(seq 1 30); do
     local att_state
     att_state="$(aws ec2 describe-volumes --region "$AWS_REGION" \
@@ -595,7 +636,6 @@ post_install_swap() {
     sleep 2
   done
 
-  # Delete old ISO volume
   if [[ -n "$old_root_vol" && "$old_root_vol" != "None" ]]; then
     aws ec2 delete-volume --region "$AWS_REGION" --volume-id "$old_root_vol" 2>/dev/null || true
   fi
@@ -614,25 +654,7 @@ aws ec2 wait instance-running --region "$AWS_REGION" \
   --instance-ids "$CP0_ID" "$CP1_ID" "$ARB_ID"
 ok "All instances booting into installed RHCOS."
 
-# =================================================================
-# Phase 5: Wait for OpenShift bootstrap + install completion
-# =================================================================
-
-info "============================================================"
-info "Phase 5: Waiting for OpenShift bootstrap and install"
-info "============================================================"
-
-openshift-install agent wait-for bootstrap-complete \
-  --dir "$WAIT_DIR" --log-level info 2>&1 | while IFS= read -r line; do
-  echo "  [bootstrap] $line"
-done || warn "Bootstrap wait returned non-zero (may already be complete)"
-
-openshift-install agent wait-for install-complete \
-  --dir "$WAIT_DIR" --log-level info 2>&1 | while IFS= read -r line; do
-  echo "  [install] $line"
-done
-
-# Extract kubeconfig
+# Extract kubeconfig from local state
 if [[ -f "${WAIT_DIR}/auth/kubeconfig" ]]; then
   cp "${WAIT_DIR}/auth/kubeconfig" "$KUBECONFIG_OUT"
   ok "Kubeconfig saved to $KUBECONFIG_OUT"
@@ -646,8 +668,9 @@ fi
 
 export KUBECONFIG="$KUBECONFIG_OUT"
 
-info "Waiting for cluster API ..."
-for _retry in $(seq 1 30); do
+# Wait for API server to come back after volume swap reboot
+info "Waiting for cluster API after volume swap ..."
+for _retry in $(seq 1 60); do
   if oc get nodes &>/dev/null; then
     ok "Cluster API is reachable."
     break
@@ -834,7 +857,7 @@ spec:
         volumeGroup: linstor_lvm-thin
       source:
         hostDevices:
-          - /dev/nvme2n1
+          - /dev/nvme1n1
 EOF
 
   # LinstorSatelliteConfiguration for arbiter node (diskless)

@@ -1,0 +1,365 @@
+---
+# Phase 5a: Two-phase volume swap
+#
+# After coreos-installer writes RHCOS to /dev/xvdb, nodes reboot but
+# boot back into the ISO (EC2 can't change boot order). We fix this
+# with a two-phase volume swap:
+#
+#   Phase 1: Swap cp-1 and arbiter-0 only.  cp-0 stays on the ISO so
+#            its Machine Config Server (port 22623) keeps running.
+#            cp-1 and arbiter-0 boot RHCOS, fetch ignition from cp-0.
+#
+#   Phase 2: Once the Machine Config Operator is serving MCS on cp-1,
+#            swap cp-0.  It boots RHCOS and fetches ignition from cp-1.
+
+# ---------- self-sufficient auth/ID retrieval (for tag-based resume) ----------
+
+- name: Retrieve auth token from rendezvous host
+  ansible.builtin.command:
+    cmd: >-
+      ssh -o StrictHostKeyChecking=no
+      -i {{ tna_ssh_private_key }}
+      core@{{ tna_cp0_public_ip }}
+      "sudo grep USER_AUTH_TOKEN /etc/assisted/rendezvous-host.env | cut -d= -f2"
+  register: _auth_token_result
+  changed_when: false
+  no_log: true
+  when: _auth_token is not defined
+
+- name: Set auth token fact
+  ansible.builtin.set_fact:
+    _auth_token: "{{ _auth_token_result.stdout | trim }}"
+  no_log: true
+  when: _auth_token is not defined
+
+- name: Retrieve infra-env ID
+  ansible.builtin.command:
+    cmd: >-
+      ssh -o StrictHostKeyChecking=no
+      -i {{ tna_ssh_private_key }}
+      core@{{ tna_cp0_public_ip }}
+      "curl -s http://{{ tna_rendezvous_ip }}:8090/api/assisted-install/v2/infra-envs
+      -H 'Authorization: {{ _auth_token }}' | jq -r '.[0].id'"
+  register: _infra_env_result
+  until: _infra_env_result.stdout | default('') | trim not in ['', 'null']
+  retries: 30
+  delay: 10
+  changed_when: false
+  when: _infra_env_id is not defined
+
+- name: Set infra-env ID fact
+  ansible.builtin.set_fact:
+    _infra_env_id: "{{ _infra_env_result.stdout | trim }}"
+  when: _infra_env_id is not defined
+
+# ---------- gate: wait for coreos-installer to finish on all nodes ----------
+
+- name: Wait for all hosts to finish writing image to disk
+  ansible.builtin.shell:
+    cmd: >-
+      ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5
+      -i {{ tna_ssh_private_key }}
+      core@{{ tna_cp0_public_ip }}
+      "curl -s http://{{ tna_rendezvous_ip }}:8090/api/assisted-install/v2/infra-envs/{{ _infra_env_id }}/hosts
+      -H 'Authorization: {{ _auth_token }}'
+      | jq '[.[] | select(.progress.current_stage==\"Writing image to disk\")] | length'"
+  register: _writing_count
+  until: (_writing_count.stdout | default('1') | trim | int) == 0
+  retries: 120
+  delay: 15
+  changed_when: false
+
+# ====================================================================
+#  PHASE 1 — Swap cp-1 and arbiter-0 (keep cp-0 on ISO for MCS)
+# ====================================================================
+
+- name: "Phase 1 — Stop cp-1 and arbiter-0 for volume swap"
+  amazon.aws.ec2_instance:
+    region: "{{ tna_aws_region }}"
+    instance_ids:
+      - "{{ tna_cp1_id }}"
+      - "{{ tna_arb_id }}"
+    state: stopped
+    wait: true
+    wait_timeout: 300
+
+- name: "Phase 1 — Volume swap cp-1"
+  ansible.builtin.include_tasks: _volume_swap_single.yml
+  vars:
+    _instance:
+      id: "{{ tna_cp1_id }}"
+      label: "cp-1"
+
+- name: "Phase 1 — Volume swap arbiter-0"
+  ansible.builtin.include_tasks: _volume_swap_single.yml
+  vars:
+    _instance:
+      id: "{{ tna_arb_id }}"
+      label: "arbiter-0"
+
+- name: "Phase 1 — Start cp-1 and arbiter-0 with RHCOS"
+  amazon.aws.ec2_instance:
+    region: "{{ tna_aws_region }}"
+    instance_ids:
+      - "{{ tna_cp1_id }}"
+      - "{{ tna_arb_id }}"
+    state: running
+    wait: true
+    wait_timeout: 300
+
+- name: "Phase 1 — Bootstrap status"
+  ansible.builtin.debug:
+    msg: >-
+      cp-1 and arbiter-0 now booting RHCOS. cp-0 (rendezvous host) stays on
+      ISO, serving Machine Config Server on port 22623. Waiting for the REAL
+      kube-apiserver on cp-1 before swapping cp-0.
+
+# Resolve the NLB API target group ARN for health checks.
+- name: "Phase 1 — Resolve NLB ARN"
+  ansible.builtin.command:
+    cmd: >-
+      aws elbv2 describe-load-balancers --region {{ tna_aws_region }}
+      --names {{ tna_cluster_name }}-nlb
+      --query "LoadBalancers[0].LoadBalancerArn"
+      --output text
+  register: _nlb_arn_result
+  changed_when: false
+
+- name: "Phase 1 — Resolve API target group ARN"
+  ansible.builtin.command:
+    cmd: >-
+      aws elbv2 describe-target-groups --region {{ tna_aws_region }}
+      --load-balancer-arn {{ _nlb_arn_result.stdout | trim }}
+      --query "TargetGroups[?Port==`6443`].TargetGroupArn | [0]"
+      --output text
+  register: _api_tg_arn
+  changed_when: false
+
+# Wait for cp-1's real kube-apiserver to pass the NLB health check.
+# The bootstrap API on cp-0's ISO responds immediately, but we must
+# not swap cp-0 until the REAL control plane runs on cp-1.
+- name: "Phase 1 — Wait for real kube-apiserver on cp-1 (up to 30 min)"
+  ansible.builtin.command:
+    cmd: >-
+      aws elbv2 describe-target-health --region {{ tna_aws_region }}
+      --target-group-arn {{ _api_tg_arn.stdout | trim }}
+      --targets Id={{ tna_cp1_id }}
+      --query "TargetHealthDescriptions[0].TargetHealth.State"
+      --output text
+  register: _cp1_api_health
+  until: (_cp1_api_health.stdout | default('') | trim) == 'healthy'
+  retries: 60
+  delay: 30
+  changed_when: false
+  ignore_errors: true
+
+- name: "Phase 1 — Fail if cp-1 API never came up"
+  ansible.builtin.fail:
+    msg: >-
+      cp-1 kube-apiserver never became healthy in the NLB target group
+      after 30 minutes. Bootstrap may have failed. Check cp-1 console.
+  when: _cp1_api_health is failed
+
+# Also verify MCS is healthy on cp-1 — cp-0 needs it for ignition.
+- name: "Phase 1 — Resolve MCS target group ARN"
+  ansible.builtin.command:
+    cmd: >-
+      aws elbv2 describe-target-groups --region {{ tna_aws_region }}
+      --load-balancer-arn {{ _nlb_arn_result.stdout | trim }}
+      --query "TargetGroups[?Port==`22623`].TargetGroupArn | [0]"
+      --output text
+  register: _mcs_tg_arn
+  changed_when: false
+
+- name: "Phase 1 — Wait for MCS on cp-1 (up to 10 min)"
+  ansible.builtin.command:
+    cmd: >-
+      aws elbv2 describe-target-health --region {{ tna_aws_region }}
+      --target-group-arn {{ _mcs_tg_arn.stdout | trim }}
+      --targets Id={{ tna_cp1_id }}
+      --query "TargetHealthDescriptions[0].TargetHealth.State"
+      --output text
+  register: _cp1_mcs_health
+  until: (_cp1_mcs_health.stdout | default('') | trim) == 'healthy'
+  retries: 20
+  delay: 30
+  changed_when: false
+  ignore_errors: true
+
+- name: "Phase 1 — Resolve cp-1 public IP for SSH"
+  amazon.aws.ec2_instance_info:
+    region: "{{ tna_aws_region }}"
+    instance_ids:
+      - "{{ tna_cp1_id }}"
+  register: _cp1_info
+
+- name: "Phase 1 — Set cp-1 public IP fact"
+  ansible.builtin.set_fact:
+    _cp1_public_ip: "{{ _cp1_info.instances[0].public_ip_address }}"
+
+- name: "Phase 1 — Display bootstrap readiness"
+  ansible.builtin.debug:
+    msg: >-
+      cp-1 API: {{ _cp1_api_health.stdout | default('unknown') | trim }},
+      cp-1 MCS: {{ _cp1_mcs_health.stdout | default('unknown') | trim }}.
+      Waiting for bootstrap to complete before swapping cp-0.
+
+# Gate: wait for bootstrap to deploy etcd to cp-1 and arbiter-0.
+# cp-0 stays on the ISO as the bootstrap host — it does NOT register
+# as a cluster node or etcd member until after Phase 2 swaps it to
+# RHCOS. So we expect 2 etcd members and 2 nodes at this point.
+- name: "Phase 1 — Wait for 2 etcd members via cp-1 (up to 20 min)"
+  ansible.builtin.shell:
+    cmd: >-
+      ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10
+      -i {{ tna_ssh_private_key }}
+      core@{{ _cp1_public_ip }}
+      "sudo oc --kubeconfig /etc/kubernetes/static-pod-resources/kube-apiserver-certs/secrets/node-kubeconfigs/localhost.kubeconfig
+      get etcd -o jsonpath='{.items[0].status.conditions[?(@.type==\"EtcdMembersAvailable\")].message}' 2>/dev/null || echo 'not-ready'"
+  register: _etcd_members
+  until: >-
+    _etcd_members.rc == 0
+    and '2 members are available' in (_etcd_members.stdout | default(''))
+  retries: 40
+  delay: 30
+  changed_when: false
+  ignore_errors: true
+
+# Wait for cp-1 and arbiter-0 to register as nodes (cp-0 joins later).
+- name: "Phase 1 — Wait for 2 nodes registered via cp-1 (up to 15 min)"
+  ansible.builtin.shell:
+    cmd: >-
+      ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10
+      -i {{ tna_ssh_private_key }}
+      core@{{ _cp1_public_ip }}
+      "sudo oc --kubeconfig /etc/kubernetes/static-pod-resources/kube-apiserver-certs/secrets/node-kubeconfigs/localhost.kubeconfig
+      get nodes --no-headers 2>/dev/null | wc -l"
+  register: _node_count
+  until: (_node_count.stdout | default('0') | trim | int) >= 2
+  retries: 30
+  delay: 30
+  changed_when: false
+
+- name: "Phase 1 — Display bootstrap completion"
+  ansible.builtin.debug:
+    msg: >-
+      Bootstrap ready — etcd: {{ _etcd_members.stdout | default('unknown') | trim }},
+      nodes registered: {{ _node_count.stdout | default('0') | trim }}.
+      cp-0 will join as 3rd member after Phase 2 swap.
+      Proceeding with cp-0 volume swap.
+
+# ====================================================================
+#  PHASE 2 — Swap cp-0 (rendezvous/bootstrap node)
+# ====================================================================
+
+- name: "Phase 2 — Stop cp-0 for volume swap"
+  amazon.aws.ec2_instance:
+    region: "{{ tna_aws_region }}"
+    instance_ids:
+      - "{{ tna_cp0_id }}"
+    state: stopped
+    wait: true
+    wait_timeout: 300
+
+- name: "Phase 2 — Volume swap cp-0"
+  ansible.builtin.include_tasks: _volume_swap_single.yml
+  vars:
+    _instance:
+      id: "{{ tna_cp0_id }}"
+      label: "cp-0"
+
+- name: "Phase 2 — Start cp-0 with RHCOS"
+  amazon.aws.ec2_instance:
+    region: "{{ tna_aws_region }}"
+    instance_ids:
+      - "{{ tna_cp0_id }}"
+    state: running
+    wait: true
+    wait_timeout: 300
+
+# ---------- copy kubeconfig for subsequent phases ----------
+# The kubeconfig from the ISO build has a CA that doesn't match what the
+# kube-apiserver generates during bootstrap (kube-apiserver-lb-signer).
+# Fetch the real lb-ext.kubeconfig from cp-1 instead.
+
+- name: Wait for cp-1 SSH to be reachable after RHCOS boot
+  ansible.builtin.command:
+    cmd: >-
+      ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10
+      -i {{ tna_ssh_private_key }}
+      core@{{ _cp1_public_ip }} "echo ok"
+  register: _cp1_ssh_check
+  until: _cp1_ssh_check.rc == 0
+  retries: 20
+  delay: 15
+  changed_when: false
+
+- name: Fetch lb-ext.kubeconfig from cp-1
+  ansible.builtin.command:
+    cmd: >-
+      ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10
+      -i {{ tna_ssh_private_key }}
+      core@{{ _cp1_public_ip }}
+      "sudo cat /etc/kubernetes/static-pod-resources/kube-apiserver-certs/secrets/node-kubeconfigs/lb-ext.kubeconfig"
+  register: _lb_ext_kubeconfig
+  until: _lb_ext_kubeconfig.rc == 0 and (_lb_ext_kubeconfig.stdout | length) > 100
+  retries: 30
+  delay: 10
+  changed_when: false
+
+- name: Write kubeconfig to output directory
+  ansible.builtin.copy:
+    content: "{{ _lb_ext_kubeconfig.stdout }}"
+    dest: "{{ tna_kubeconfig_path }}"
+    mode: "0600"
+
+- name: Set KUBECONFIG for subsequent tasks
+  ansible.builtin.set_fact:
+    _kubeconfig: "{{ tna_kubeconfig_path }}"
+
+# The agent-based installer regenerates the kubeadmin password during
+# bootstrap, so the ISO build copy is stale. Generate a new one and
+# patch the secret in the cluster.
+- name: Generate new kubeadmin password
+  ansible.builtin.shell:
+    cmd: |
+      python3 -c "
+      import secrets, string, bcrypt
+      chars = string.ascii_letters + string.digits
+      pw = '-'.join(''.join(secrets.choice(chars) for _ in range(5)) for _ in range(4))
+      h = bcrypt.hashpw(pw.encode(), bcrypt.gensalt(rounds=10)).decode()
+      print(pw)
+      print(h)
+      "
+  register: _new_pw
+  changed_when: false
+
+- name: Set kubeadmin password facts
+  ansible.builtin.set_fact:
+    _kubeadmin_cleartext: "{{ _new_pw.stdout_lines[0] }}"
+    _kubeadmin_hash: "{{ _new_pw.stdout_lines[1] }}"
+
+- name: Patch kubeadmin secret with new password
+  ansible.builtin.command:
+    cmd: >-
+      oc patch secret kubeadmin -n kube-system --type=merge
+      -p '{"data":{"kubeadmin":"{{ _kubeadmin_hash | b64encode }}"}}'
+      --kubeconfig {{ _kubeconfig }}
+  register: _pw_patch
+  until: _pw_patch.rc == 0
+  retries: 10
+  delay: 30
+  changed_when: "'patched' in (_pw_patch.stdout | default(''))"
+
+- name: Save kubeadmin password to output directory
+  ansible.builtin.copy:
+    content: "{{ _kubeadmin_cleartext }}"
+    dest: "{{ tna_output_root }}/{{ tna_guid }}/auth/kubeadmin-password"
+    mode: "0600"
+
+- name: Display volume swap completion
+  ansible.builtin.debug:
+    msg: >-
+      Two-phase volume swap complete. All instances now booting RHCOS.
+      cp-0 will fetch ignition from MCO on cp-1/arbiter-0.
+      Phase 5b monitors install completion via openshift-install.

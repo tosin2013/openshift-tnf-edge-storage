@@ -1,0 +1,141 @@
+---
+# Phase 4: Wait for assisted-service, register hosts, trigger install
+
+- name: Wait for assisted-service API to be available
+  ansible.builtin.shell:
+    cmd: >-
+      ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5
+      -i {{ tna_ssh_private_key }}
+      core@{{ tna_cp0_public_ip }}
+      "curl -s -o /dev/null -w '%{http_code}'
+      http://{{ tna_rendezvous_ip }}:8090/api/assisted-install/v2/clusters"
+  register: _api_check
+  until: _api_check.stdout | default('') | trim in ['200', '401']
+  retries: 90
+  delay: 10
+  changed_when: false
+
+- name: Retrieve auth token from rendezvous host
+  ansible.builtin.command:
+    cmd: >-
+      ssh -o StrictHostKeyChecking=no
+      -i {{ tna_ssh_private_key }}
+      core@{{ tna_cp0_public_ip }}
+      "sudo grep USER_AUTH_TOKEN /etc/assisted/rendezvous-host.env | cut -d= -f2"
+  register: _auth_token_result
+  changed_when: false
+  no_log: true
+
+- name: Set auth token fact
+  ansible.builtin.set_fact:
+    _auth_token: "{{ _auth_token_result.stdout | trim }}"
+  no_log: true
+
+- name: Retrieve infra-env ID
+  ansible.builtin.command:
+    cmd: >-
+      ssh -o StrictHostKeyChecking=no
+      -i {{ tna_ssh_private_key }}
+      core@{{ tna_cp0_public_ip }}
+      "curl -s http://{{ tna_rendezvous_ip }}:8090/api/assisted-install/v2/infra-envs
+      -H 'Authorization: {{ _auth_token }}' | jq -r '.[0].id'"
+  register: _infra_env_result
+  until: _infra_env_result.stdout | default('') | trim not in ['', 'null']
+  retries: 30
+  delay: 10
+  changed_when: false
+
+- name: Set infra-env ID fact
+  ansible.builtin.set_fact:
+    _infra_env_id: "{{ _infra_env_result.stdout | trim }}"
+
+- name: Retrieve cluster ID
+  ansible.builtin.command:
+    cmd: >-
+      ssh -o StrictHostKeyChecking=no
+      -i {{ tna_ssh_private_key }}
+      core@{{ tna_cp0_public_ip }}
+      "curl -s http://{{ tna_rendezvous_ip }}:8090/api/assisted-install/v2/clusters
+      -H 'Authorization: {{ _auth_token }}' | jq -r '.[0].id'"
+  register: _cluster_id_result
+  until: _cluster_id_result.stdout | default('') | trim not in ['', 'null']
+  retries: 30
+  delay: 10
+  changed_when: false
+
+- name: Set cluster ID fact
+  ansible.builtin.set_fact:
+    _cluster_id: "{{ _cluster_id_result.stdout | trim }}"
+
+- name: Display cluster and infra-env IDs
+  ansible.builtin.debug:
+    msg: "Cluster ID: {{ _cluster_id }} | Infra-env ID: {{ _infra_env_id }}"
+
+# Wait for all 3 hosts to reach 'known' status
+- name: Wait for all hosts to be ready (known status)
+  ansible.builtin.command:
+    cmd: >-
+      ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5
+      -i {{ tna_ssh_private_key }}
+      core@{{ tna_cp0_public_ip }}
+      "curl -s http://{{ tna_rendezvous_ip }}:8090/api/assisted-install/v2/infra-envs/{{ _infra_env_id }}/hosts
+      -H 'Authorization: {{ _auth_token }}'
+      | jq '[.[] | select(.status==\"known\")] | length'"
+  register: _known_hosts
+  until: (_known_hosts.stdout | trim | int) >= 3
+  retries: 120
+  delay: 15
+  changed_when: false
+
+- name: Trigger cluster installation
+  ansible.builtin.command:
+    cmd: >-
+      ssh -o StrictHostKeyChecking=no
+      -i {{ tna_ssh_private_key }}
+      core@{{ tna_cp0_public_ip }}
+      "curl -s -X POST
+      'http://{{ tna_rendezvous_ip }}:8090/api/assisted-install/v2/clusters/{{ _cluster_id }}/actions/install'
+      -H 'Authorization: {{ _auth_token }}'
+      -w '%{http_code}' -o /dev/null"
+  register: _install_trigger
+  failed_when: _install_trigger.stdout | trim != '202'
+  changed_when: true
+
+# Poll host progress until coreos-installer finishes on all hosts
+- name: Monitor coreos-installer progress
+  ansible.builtin.command:
+    cmd: >-
+      ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5
+      -i {{ tna_ssh_private_key }}
+      core@{{ tna_cp0_public_ip }}
+      "curl -s http://{{ tna_rendezvous_ip }}:8090/api/assisted-install/v2/infra-envs/{{ _infra_env_id }}/hosts
+      -H 'Authorization: {{ _auth_token }}'
+      | jq -r '[.[] | .progress.current_stage // \"unknown\"] | join(\",\")'"
+  register: _install_stages
+  until: >-
+    _install_stages.rc != 0
+    or (_install_stages.stdout | trim).split(',') | select('match', 'Rebooting|Done') | list | length >= 2
+  retries: 180
+  delay: 10
+  changed_when: false
+  ignore_errors: true
+
+- name: Check for installation errors
+  ansible.builtin.command:
+    cmd: >-
+      ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5
+      -i {{ tna_ssh_private_key }}
+      core@{{ tna_cp0_public_ip }}
+      "curl -s http://{{ tna_rendezvous_ip }}:8090/api/assisted-install/v2/infra-envs/{{ _infra_env_id }}/hosts
+      -H 'Authorization: {{ _auth_token }}'
+      | jq '[.[] | select(.status==\"error\")] | length'"
+  register: _error_count
+  changed_when: false
+  ignore_errors: true
+
+- name: Fail if any host has errors
+  ansible.builtin.fail:
+    msg: "One or more hosts in error state during coreos-installer"
+  when:
+    - _error_count.rc == 0
+    - (_error_count.stdout | trim | int) > 0

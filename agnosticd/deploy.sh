@@ -327,11 +327,21 @@ deploy_student_agent() {
   echo "$guid" >> "$MANIFEST"
   echo "==> Deploying student TNA cluster ($guid) via agent-based installer ..."
 
-  "$SCRIPT_DIR/deploy-tna.sh" \
-    --guid "$guid" \
-    --account "$ACCOUNT" \
-    --region "${AWS_REGION:-us-east-2}" \
-    --domain "${BASE_DOMAIN}"
+  local ansible_dir="${REPO_ROOT}/ansible"
+  if [[ "${USE_ANSIBLE:-true}" == "true" && -f "${ansible_dir}/playbooks/deploy-tna-student.yml" ]]; then
+    ANSIBLE_CONFIG="${ansible_dir}/ansible.cfg" ansible-playbook \
+      "${ansible_dir}/playbooks/deploy-tna-student.yml" \
+      -e tna_guid="$guid" \
+      -e tna_base_domain="${BASE_DOMAIN}" \
+      -e tna_aws_region="${AWS_REGION:-us-east-2}" \
+      -e tna_owner="${OWNER:-tosin@redhat.com}"
+  else
+    "$SCRIPT_DIR/deploy-tna.sh" \
+      --guid "$guid" \
+      --account "$ACCOUNT" \
+      --region "${AWS_REGION:-us-east-2}" \
+      --domain "${BASE_DOMAIN}"
+  fi
 
   echo "==> Student TNA cluster ($guid) deployed."
 }

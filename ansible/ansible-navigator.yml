@@ -1,0 +1,31 @@
+---
+ansible-navigator:
+  execution-environment:
+    image: quay.io/linbit-workshop/tna-student-ee:latest
+    pull:
+      policy: missing
+    container-engine: podman
+    volume-mounts:
+      - src: ${HOME}/.ssh
+        dest: /home/runner/.ssh
+        options: ro
+      - src: ${HOME}/pull-secret.json
+        dest: /home/runner/pull-secret.json
+        options: ro
+      - src: ${HOME}/Development/agnosticd-v2-secrets
+        dest: /home/runner/secrets
+        options: ro
+      - src: ${HOME}/Development/agnosticd-v2-output
+        dest: /home/runner/output
+    environment-variables:
+      pass:
+        - AWS_ACCESS_KEY_ID
+        - AWS_SECRET_ACCESS_KEY
+        - AWS_DEFAULT_REGION
+  mode: stdout
+  playbook-artifact:
+    enable: true
+    save-as: /tmp/tna-deploy-{playbook_name}-{time_stamp}.json
+  logging:
+    level: warning
+    file: /tmp/ansible-navigator.log

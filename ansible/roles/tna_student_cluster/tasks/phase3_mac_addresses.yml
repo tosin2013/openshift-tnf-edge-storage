@@ -1,0 +1,45 @@
+---
+# Phase 3: Collect instance metadata (MACs for debugging)
+
+- name: Get instance details for all 3 nodes
+  amazon.aws.ec2_instance_info:
+    region: "{{ tna_aws_region }}"
+    instance_ids:
+      - "{{ tna_cp0_id }}"
+      - "{{ tna_cp1_id }}"
+      - "{{ tna_arb_id }}"
+  register: _instance_info
+
+- name: Build instance metadata map
+  ansible.builtin.set_fact:
+    _instance_map: >-
+      {{
+        _instance_info.instances
+        | items2dict(key_name='instance_id', value_name='network_interfaces')
+      }}
+
+- name: Extract MAC addresses
+  ansible.builtin.set_fact:
+    tna_cp0_mac: "{{ (_instance_info.instances | selectattr('instance_id', 'eq', tna_cp0_id) | first).network_interfaces[0].mac_address }}"
+    tna_cp1_mac: "{{ (_instance_info.instances | selectattr('instance_id', 'eq', tna_cp1_id) | first).network_interfaces[0].mac_address }}"
+    tna_arb_mac: "{{ (_instance_info.instances | selectattr('instance_id', 'eq', tna_arb_id) | first).network_interfaces[0].mac_address }}"
+
+- name: Display MAC addresses
+  ansible.builtin.debug:
+    msg: "MAC addresses: CP0={{ tna_cp0_mac }} CP1={{ tna_cp1_mac }} ARB={{ tna_arb_mac }}"
+
+- name: Save instance metadata to file
+  ansible.builtin.copy:
+    content: |
+      CP0: instance={{ tna_cp0_id }} ip={{ tna_cp0_ip }} mac={{ tna_cp0_mac }}
+      CP1: instance={{ tna_cp1_id }} ip={{ tna_cp1_ip }} mac={{ tna_cp1_mac }}
+      ARB: instance={{ tna_arb_id }} ip={{ tna_arb_ip }} mac={{ tna_arb_mac }}
+    dest: "{{ tna_assets_dir }}/instance-macs.txt"
+    mode: "0644"
+
+- name: Get CP0 public IP for SSH access
+  ansible.builtin.set_fact:
+    tna_cp0_public_ip: >-
+      {{ (_instance_info.instances
+          | selectattr('instance_id', 'eq', tna_cp0_id)
+          | first).public_ip_address | default('') }}

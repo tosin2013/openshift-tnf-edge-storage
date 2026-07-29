@@ -35,17 +35,17 @@ Parameters:
     Type: Number
     Default: 200
     Description: >-
-      Secondary EBS volume size (GB) for control plane nodes.
-      coreos-installer writes RHCOS here, then post-install volume swap
-      makes it the root device. Must hold OS (~40 GB) + LINSTOR pool.
+      Secondary EBS volume (GB) for CP nodes (/dev/xvdb = nvme1n1).
+      coreos-installer writes RHCOS here. After install, volume swap
+      moves this to /dev/sda1 as the boot device.
 
   CPLinstorVolumeSize:
     Type: Number
-    Default: 100
+    Default: 50
     Description: >-
-      Dedicated EBS volume (GB) for LINSTOR storage pool on each CP node.
-      Appears as /dev/xvdc (/dev/nvme1n1 inside the instance).
-      Used exclusively for lvm-thin pool backing the DRBD replicas.
+      LINSTOR storage pool volume (GB) per CP node (/dev/xvdc = nvme2n1).
+      Must be < 100 GB so the assisted-installer cannot select it.
+      Used exclusively for lvm-thin pool backing DRBD replicas.
 
   ArbiterRootVolumeSize:
     Type: Number
@@ -318,9 +318,8 @@ Resources:
 
   # ─────────────────────────────────────────────────────────────
   # EC2 Instance — Arbiter (1x, smaller)
-  # The AMI root volume (~16 GB from the ISO snapshot) is left at
-  # default size so the installer clearly picks the larger second
-  # disk (/dev/xvdb) as the installation target.
+  # The arbiter has only 1 additional volume (/dev/xvdb) for RHCOS.
+  # After install, volume swap moves it to /dev/sda1 as boot device.
   # ─────────────────────────────────────────────────────────────
   Arbiter0:
     Type: AWS::EC2::Instance

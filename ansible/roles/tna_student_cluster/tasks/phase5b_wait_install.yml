@@ -1,0 +1,75 @@
+---
+# Phase 5b: Wait for OpenShift install to complete
+# After Phase 5a swaps volumes, nodes boot into RHCOS and the cluster
+# bootstraps normally. We monitor completion via the cluster API
+# (reachable through the NLB) since openshift-install can't reach
+# the rendezvous host's private IP from outside the VPC.
+
+- name: Wait for kube-apiserver to be reachable
+  ansible.builtin.uri:
+    url: "https://api.{{ tna_cluster_name }}.{{ tna_base_domain }}:6443/version"
+    method: GET
+    validate_certs: false
+    status_code: [200, 401, 403]
+    return_content: false
+  register: _api_reachable
+  until: _api_reachable.status | default(0) in [200, 401, 403]
+  retries: 60
+  delay: 30
+  ignore_errors: true
+
+- name: Wait for all nodes to be Ready
+  ansible.builtin.command:
+    cmd: >-
+      oc get nodes --no-headers
+      --kubeconfig {{ _kubeconfig }}
+    # Count nodes that are Ready
+  register: _nodes
+  until: >-
+    _nodes.rc == 0
+    and (_nodes.stdout_lines | length) >= 3
+    and (_nodes.stdout_lines | select('search', '\\bReady\\b') | reject('search', 'NotReady') | list | length) >= 3
+  retries: 60
+  delay: 30
+  changed_when: false
+  ignore_errors: true
+
+- name: Wait for cluster operators to stabilize
+  ansible.builtin.command:
+    cmd: >-
+      oc get clusteroperators --no-headers
+      --kubeconfig {{ _kubeconfig }}
+  register: _co_status
+  until: >-
+    _co_status.rc == 0
+    and (_co_status.stdout_lines | select('search', 'False.*True') | list | length) == 0
+  retries: 60
+  delay: 30
+  changed_when: false
+  ignore_errors: true
+
+- name: Display cluster status
+  ansible.builtin.command:
+    cmd: >-
+      oc get clusterversion --kubeconfig {{ _kubeconfig }}
+  register: _cv_status
+  changed_when: false
+  ignore_errors: true
+
+- name: Show cluster version
+  ansible.builtin.debug:
+    msg: "{{ _cv_status.stdout | default('Cluster version not available yet') }}"
+
+- name: Fail if nodes not ready
+  ansible.builtin.fail:
+    msg: >-
+      Not all nodes reached Ready state within timeout.
+      {{ _nodes.stdout | default('No node info available') }}
+  when: >-
+    _nodes is failed
+    or (_nodes.stdout_lines | default([]) | length) < 3
+    or (_nodes.stdout_lines | default([]) | select('search', '\\bReady\\b') | reject('search', 'NotReady') | list | length) < 3
+
+- name: Display install success
+  ansible.builtin.debug:
+    msg: "OpenShift install completed — all nodes Ready, cluster operators stabilizing"

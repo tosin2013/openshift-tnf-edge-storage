@@ -1,0 +1,27 @@
+---
+# Deploy a single TNA student cluster (2 CP + 1 arbiter) on AWS.
+#
+# Usage:
+#   ansible-playbook deploy-tna-student.yml \
+#     -e tna_guid=linbit-s1 \
+#     -e tna_base_domain=sandbox3493.opentlc.com
+#
+#   # Resume from a specific phase after a failure:
+#   ansible-playbook deploy-tna-student.yml \
+#     -e tna_guid=linbit-s1 \
+#     -e tna_base_domain=sandbox3493.opentlc.com \
+#     --tags phase5b,phase6,phase7,phase8
+#
+#   # Via ansible-navigator:
+#   ansible-navigator run deploy-tna-student.yml \
+#     -e tna_guid=linbit-s1 \
+#     -e tna_base_domain=sandbox3493.opentlc.com \
+#     --mode stdout
+
+- name: Deploy TNA Student Cluster
+  hosts: localhost
+  connection: local
+  gather_facts: true
+
+  roles:
+    - role: tna_student_cluster

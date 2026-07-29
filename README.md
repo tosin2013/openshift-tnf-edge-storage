@@ -44,13 +44,39 @@ See [docs/workshop/module-outline.md](docs/workshop/module-outline.md) for full 
 | [docs/architecture/linbit-integration.md](docs/architecture/linbit-integration.md) | LINSTOR/DRBD integration patterns |
 | [docs/setup/linbit-registry-credentials.md](docs/setup/linbit-registry-credentials.md) | How to get my.linbit.com credentials for the `drbd.io` pull secret |
 | [docs/research/openshift-agent-install.md](docs/research/openshift-agent-install.md) | Track B agent-install research notes |
+| [docs/architecture/ec2-volume-swap.md](docs/architecture/ec2-volume-swap.md) | Two-phase EBS volume swap: why and how (novel approach) |
+| [ansible/DEVELOPER-GUIDE.md](ansible/DEVELOPER-GUIDE.md) | TNA student cluster Ansible role: phases, debugging, prerequisites |
 | [docs/research/open-questions.md](docs/research/open-questions.md) | Items to validate before Helm/Showroom scaffold |
+
+## Quick start (AWS TNA)
+
+### Prerequisites
+
+- AWS credentials, Route53-managed domain, `openshift-install` 4.22+, `oc`, `aws` CLI
+- See [Developer Guide](ansible/DEVELOPER-GUIDE.md) for full prerequisites
+
+### Deploy with LINSTOR
+
+```bash
+make deploy-student GUID=linbit-s1 BASE_DOMAIN=sandbox3493.opentlc.com
+```
+
+### Deploy without LINSTOR (bare TNA cluster)
+
+Omit LINBIT credentials from your secrets file — Phase 7 auto-skips.
+
+```bash
+make deploy-student GUID=linbit-s1 BASE_DOMAIN=sandbox3493.opentlc.com
+```
+
+### Teardown
+
+```bash
+make teardown-student GUID=linbit-s1 BASE_DOMAIN=sandbox3493.opentlc.com
+```
 
 ## Status
 
-Research and architecture phase. Next steps:
+**Automated TNA deploy on AWS EC2 is repeatable.** Two consecutive clean end-to-end deploys verified (July 2026) — zero manual intervention, all 8 phases pass (161 ok / 0 failed).
 
-- Scaffold Helm chart from [field-sourced-content-template](https://github.com/rhpds/field-sourced-content-template)
-- Write Showroom AsciiDoc modules
-- Identify AgnosticD config for OCP 4.22+ TNA/Compact on AWS
-- Confirm LINBIT Operator channel for 4.22+
+The agent-based install uses a novel two-phase EBS volume swap to work around EC2's fixed boot order. See [EC2 Volume Swap Architecture](docs/architecture/ec2-volume-swap.md) for the full technical explanation.

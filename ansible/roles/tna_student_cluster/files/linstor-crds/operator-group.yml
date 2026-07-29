@@ -1,0 +1,9 @@
+---
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: linbit-sds-og
+  namespace: linbit-sds
+spec:
+  targetNamespaces:
+    - linbit-sds

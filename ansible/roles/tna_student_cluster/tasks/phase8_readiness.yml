@@ -1,0 +1,87 @@
+---
+# Phase 8: Readiness check and deployment info
+
+- name: Get cluster nodes
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ _kubeconfig }}"
+    kind: Node
+  register: _final_nodes
+
+- name: Display cluster readiness
+  ansible.builtin.debug:
+    msg: >-
+      Cluster {{ tna_cluster_name }} is ready.
+      Nodes: {{ _final_nodes.resources | length }}
+      | API: {{ tna_api_url }}
+      | Console: {{ tna_console_url }}
+      | Kubeconfig: {{ tna_kubeconfig_path }}
+
+- name: Read kubeadmin password
+  ansible.builtin.slurp:
+    src: "{{ tna_output_root }}/{{ tna_guid }}/auth/kubeadmin-password"
+  register: _kubeadmin_pw
+  ignore_errors: true
+
+- name: Set password fact
+  ansible.builtin.set_fact:
+    _kubeadmin_password: "{{ (_kubeadmin_pw.content | b64decode | trim) if _kubeadmin_pw is not failed else '' }}"
+
+- name: Save deployment info (AWS)
+  ansible.builtin.copy:
+    content: |
+      cluster_name={{ tna_cluster_name }}
+      api_url={{ tna_api_url }}
+      console_url={{ tna_console_url }}
+      username=kubeadmin
+      password={{ _kubeadmin_password }}
+      kubeconfig={{ tna_kubeconfig_path }}
+      cp0_instance_id={{ tna_cp0_id }}
+      cp1_instance_id={{ tna_cp1_id }}
+      arbiter_instance_id={{ tna_arb_id }}
+      cp0_private_ip={{ tna_cp0_ip }}
+      cp1_private_ip={{ tna_cp1_ip }}
+      arbiter_private_ip={{ tna_arb_ip }}
+      stack_name={{ tna_stack_name }}
+      aws_region={{ tna_aws_region }}
+      deploy_method=agent-based
+      ocp_version={{ tna_ocp_version }}
+    dest: "{{ tna_output_root }}/{{ tna_guid }}/deployment_info.txt"
+    mode: "0644"
+  when: tna_platform == 'aws'
+
+- name: Save deployment info (existing-cluster)
+  ansible.builtin.copy:
+    content: |
+      cluster_name={{ tna_cluster_name }}
+      platform=existing-cluster
+      api_url={{ tna_api_url }}
+      console_url={{ tna_console_url }}
+      username=kubeadmin
+      password={{ _kubeadmin_password }}
+      kubeconfig={{ tna_kubeconfig_path }}
+      arbiter_node={{ tna_arbiter_node_name }}
+      node_count={{ _final_nodes.resources | length }}
+      deploy_method=existing-cluster
+      ocp_version={{ tna_ocp_version }}
+    dest: "{{ tna_output_root }}/{{ tna_guid }}/deployment_info.txt"
+    mode: "0644"
+  when: tna_platform == 'existing-cluster'
+
+- name: Display access information
+  ansible.builtin.debug:
+    msg: |
+      ========================================================
+      TNA student cluster {{ tna_cluster_name }} deployed successfully.
+      ========================================================
+
+        Console:    {{ tna_console_url }}
+        API:        {{ tna_api_url }}
+
+        Username:   kubeadmin
+        Password:   {{ _kubeadmin_password if _kubeadmin_password | length > 0 else '(see ' ~ tna_output_root ~ '/' ~ tna_guid ~ '/auth/kubeadmin-password)' }}
+
+        Kubeconfig: {{ tna_kubeconfig_path }}
+
+        Login:      oc login {{ tna_api_url }} -u kubeadmin -p {{ _kubeadmin_password if _kubeadmin_password | length > 0 else '<password>' }}
+
+      ========================================================

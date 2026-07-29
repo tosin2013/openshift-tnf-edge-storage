@@ -1,0 +1,110 @@
+---
+# Discover an existing OpenShift cluster and populate facts for phases 6-8.
+# Required inputs: tna_kubeconfig_path, tna_arbiter_node_name
+
+- name: Verify kubeconfig file exists
+  ansible.builtin.stat:
+    path: "{{ tna_kubeconfig_path }}"
+  register: _kubeconfig_stat
+  failed_when: not _kubeconfig_stat.stat.exists
+
+- name: Set _kubeconfig shorthand
+  ansible.builtin.set_fact:
+    _kubeconfig: "{{ tna_kubeconfig_path }}"
+
+- name: Verify cluster is reachable
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ _kubeconfig }}"
+    kind: Node
+  register: _discover_nodes
+  retries: 3
+  delay: 5
+  until: _discover_nodes is not failed
+
+- name: Fail if no nodes found
+  ansible.builtin.fail:
+    msg: "No nodes found in cluster. Check kubeconfig at {{ tna_kubeconfig_path }}"
+  when: _discover_nodes.resources | length == 0
+
+- name: Verify arbiter node exists in cluster
+  ansible.builtin.fail:
+    msg: >-
+      Arbiter node '{{ tna_arbiter_node_name }}' not found in cluster.
+      Available nodes: {{ _discover_nodes.resources | map(attribute='metadata.name') | list | join(', ') }}
+  when: tna_arbiter_node_name not in (_discover_nodes.resources | map(attribute='metadata.name') | list)
+
+- name: Discover cluster API URL
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ _kubeconfig }}"
+    api_version: config.openshift.io/v1
+    kind: Infrastructure
+    name: cluster
+  register: _infra_info
+
+- name: Set API URL fact
+  ansible.builtin.set_fact:
+    tna_api_url: "{{ _infra_info.resources[0].status.apiServerURL | default('unknown') }}"
+
+- name: Discover console URL
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ _kubeconfig }}"
+    api_version: config.openshift.io/v1
+    kind: Console
+    name: cluster
+  register: _console_info
+  ignore_errors: true
+
+- name: Set console URL fact
+  ansible.builtin.set_fact:
+    tna_console_url: "{{ _console_info.resources[0].status.consoleURL | default('unknown') }}"
+  when: _console_info is not failed and _console_info.resources | length > 0
+
+- name: Set console URL fallback
+  ansible.builtin.set_fact:
+    tna_console_url: "unknown"
+  when: tna_console_url is not defined
+
+- name: Set placeholder facts for AWS-specific fields
+  ansible.builtin.set_fact:
+    tna_cp0_id: "n/a"
+    tna_cp1_id: "n/a"
+    tna_arb_id: "n/a"
+    tna_cp0_ip: "n/a"
+    tna_cp1_ip: "n/a"
+    tna_arb_ip: "n/a"
+
+- name: Load LINBIT registry credentials from secrets file
+  when: tna_linbit_registry_username | length == 0
+  block:
+    - name: Check secrets file exists
+      ansible.builtin.stat:
+        path: "{{ tna_secrets_file }}"
+      register: _secrets_stat
+
+    - name: Read secrets file
+      ansible.builtin.include_vars:
+        file: "{{ tna_secrets_file }}"
+        name: _agd_secrets
+      when: _secrets_stat.stat.exists
+
+    - name: Set LINBIT credentials from secrets
+      ansible.builtin.set_fact:
+        tna_linbit_registry_username: "{{ _agd_secrets.linbit_registry_username | default('') }}"
+        tna_linbit_registry_password: "{{ _agd_secrets.linbit_registry_password | default('') }}"
+      when: _secrets_stat.stat.exists and _agd_secrets is defined
+      no_log: true
+
+- name: Create output directories
+  ansible.builtin.file:
+    path: "{{ tna_output_root }}/{{ tna_guid }}"
+    state: directory
+    mode: "0755"
+
+- name: Display discovered cluster info
+  ansible.builtin.debug:
+    msg: >-
+      Existing cluster discovered.
+      Nodes: {{ _discover_nodes.resources | map(attribute='metadata.name') | list | join(', ') }}
+      | API: {{ tna_api_url }}
+      | Console: {{ tna_console_url }}
+      | Arbiter: {{ tna_arbiter_node_name }}

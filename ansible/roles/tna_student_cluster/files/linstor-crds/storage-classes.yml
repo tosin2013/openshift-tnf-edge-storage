@@ -1,0 +1,32 @@
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: linbit-rwo-locality
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+provisioner: linstor.csi.linbit.com
+parameters:
+  autoPlace: "2"
+  storagePool: lvm-thin
+  csi.storage.k8s.io/fstype: xfs
+  property.linstor.csi.linbit.com/DrbdOptions/auto-quorum: majority
+  property.linstor.csi.linbit.com/DrbdOptions/Resource/on-no-quorum: io-error
+volumeBindingMode: WaitForFirstConsumer
+reclaimPolicy: Delete
+allowVolumeExpansion: true
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: linbit-rwx-virt
+provisioner: linstor.csi.linbit.com
+parameters:
+  autoPlace: "2"
+  storagePool: lvm-thin
+  property.linstor.csi.linbit.com/DrbdOptions/Net/allow-two-primaries: "yes"
+  property.linstor.csi.linbit.com/DrbdOptions/auto-quorum: majority
+  property.linstor.csi.linbit.com/DrbdOptions/Resource/on-no-quorum: io-error
+volumeBindingMode: Immediate
+reclaimPolicy: Delete
+allowVolumeExpansion: true

@@ -1,0 +1,73 @@
+---
+# ===================================================================
+# TNA Student Cluster — Role Defaults
+# All values are overridable via extra-vars or host/group vars.
+# ===================================================================
+
+# Required (no default — must be supplied via -e)
+# tna_guid: linbit-s1
+# tna_account: sandbox2530
+# tna_base_domain: sandbox2530.opentlc.com
+
+# Platform selector: 'aws' (agent-based deploy) or 'existing-cluster' (bring your own)
+tna_platform: aws
+
+# Existing-cluster inputs (ignored when tna_platform == 'aws')
+tna_arbiter_node_name: ""
+
+tna_aws_region: us-east-2
+tna_ocp_version: "4.22"
+
+# Instance sizing
+tna_cp_instance_type: m7a.4xlarge
+tna_arbiter_instance_type: m7a.xlarge
+
+# EBS volumes (GB)
+tna_cp_data_volume_size: 200
+tna_cp_linstor_volume_size: 50
+tna_arbiter_root_volume_size: 120
+
+# Networking
+tna_machine_cidr: "10.0.0.0/16"
+tna_subnet_cidr: "10.0.1.0/24"
+tna_rendezvous_ip: "10.0.1.10"
+
+# Paths
+tna_pull_secret_path: "{{ ansible_env.HOME }}/pull-secret.json"
+tna_ssh_key_path: "{{ ansible_env.HOME }}/.ssh/id_ed25519.pub"
+tna_output_root: "{{ ansible_env.HOME }}/Development/agnosticd-v2-output"
+tna_secrets_file: "{{ ansible_env.HOME }}/Development/agnosticd-v2-secrets/secrets.yml"
+
+# S3 bucket for agent ISOs (created if missing)
+tna_s3_bucket: linbit-workshop-agent-isos
+
+# CloudFormation template path (relative to repo root)
+tna_cfn_template: "{{ playbook_dir }}/../../agnosticd/cloudformation/tna-student.yaml"
+
+# Owner tag for all AWS resources
+tna_owner: "tosin@redhat.com"
+
+# LINSTOR configuration
+tna_linstor_namespace: linbit-sds
+tna_linstor_operator_channel: stable-v2
+tna_linstor_storage_device: /dev/nvme1n1
+tna_linstor_encryption_passphrase: workshop-lab-2024
+
+# LINBIT registry credentials (loaded from secrets file or extra-vars)
+tna_linbit_registry_username: ""
+tna_linbit_registry_password: ""
+
+# Derived names (computed from tna_guid)
+tna_cluster_name: "{{ tna_guid }}"
+tna_stack_name: "tna-{{ tna_cluster_name }}"
+tna_assets_dir: "{{ tna_output_root }}/{{ tna_guid }}/agent-assets"
+tna_kubeconfig_path: "{{ tna_output_root }}/{{ tna_guid }}/auth/kubeconfig"
+
+# Timeouts (seconds)
+tna_assisted_api_timeout: 900
+tna_host_ready_timeout: 1800
+tna_coreos_install_timeout: 1800
+tna_cluster_install_timeout: 3600
+tna_api_ready_timeout: 600
+tna_csv_timeout: 600
+tna_satellite_timeout: 600

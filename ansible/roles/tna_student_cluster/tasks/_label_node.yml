@@ -1,0 +1,47 @@
+---
+# Label a single node as primary or arbiter.
+# _node = full node resource from k8s_info
+
+- name: "Determine if {{ _node.metadata.name }} is the arbiter"
+  ansible.builtin.set_fact:
+    _is_arbiter: >-
+      {{ 'node-role.kubernetes.io/arbiter' in (_node.metadata.labels | default({})) }}
+
+- name: "Label {{ _node.metadata.name }} as arbiter"
+  ansible.builtin.command:
+    cmd: >-
+      oc label node {{ _node.metadata.name }}
+      linbit.com/storage-role=arbiter --overwrite
+      --kubeconfig {{ _kubeconfig }}
+  register: _label_arbiter
+  until: _label_arbiter.rc == 0
+  retries: 10
+  delay: 30
+  changed_when: "'labeled' in (_label_arbiter.stdout | default(''))"
+  when: _is_arbiter | bool
+
+- name: "Taint {{ _node.metadata.name }} as arbiter"
+  ansible.builtin.command:
+    cmd: >-
+      oc adm taint nodes {{ _node.metadata.name }}
+      linbit.com/arbiter=true:NoSchedule --overwrite
+      --kubeconfig {{ _kubeconfig }}
+  register: _taint_arbiter
+  until: _taint_arbiter.rc == 0
+  retries: 10
+  delay: 30
+  changed_when: "'tainted' in (_taint_arbiter.stdout | default(''))"
+  when: _is_arbiter | bool
+
+- name: "Label {{ _node.metadata.name }} as primary"
+  ansible.builtin.command:
+    cmd: >-
+      oc label node {{ _node.metadata.name }}
+      linbit.com/storage-role=primary --overwrite
+      --kubeconfig {{ _kubeconfig }}
+  register: _label_primary
+  until: _label_primary.rc == 0
+  retries: 10
+  delay: 30
+  changed_when: "'labeled' in (_label_primary.stdout | default(''))"
+  when: not (_is_arbiter | bool)

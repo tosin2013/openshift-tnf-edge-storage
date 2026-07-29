@@ -1,0 +1,119 @@
+---
+# Phase 7: LINSTOR Operator + storage pools
+
+- name: Check LINBIT registry credentials
+  ansible.builtin.set_fact:
+    _linstor_skip: "{{ (tna_linbit_registry_username | length == 0) or (tna_linbit_registry_password | length == 0) }}"
+
+- name: Warn if LINBIT credentials are missing
+  ansible.builtin.debug:
+    msg: >-
+      LINBIT registry credentials not available — skipping LINSTOR install.
+      Set tna_linbit_registry_username/tna_linbit_registry_password or provide secrets.yml
+  when: _linstor_skip | bool
+
+- name: Install and configure LINSTOR
+  when: not (_linstor_skip | bool)
+  block:
+    - name: Create linbit-sds namespace
+      kubernetes.core.k8s:
+        kubeconfig: "{{ _kubeconfig }}"
+        kind: Namespace
+        name: "{{ tna_linstor_namespace }}"
+        state: present
+
+    - name: Apply OperatorGroup
+      kubernetes.core.k8s:
+        kubeconfig: "{{ _kubeconfig }}"
+        state: present
+        src: "{{ role_path }}/files/linstor-crds/operator-group.yml"
+
+    - name: Create drbd.io pull secret
+      kubernetes.core.k8s:
+        kubeconfig: "{{ _kubeconfig }}"
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: drbdio-pull-secret
+            namespace: "{{ tna_linstor_namespace }}"
+          type: kubernetes.io/dockerconfigjson
+          data:
+            .dockerconfigjson: >-
+              {{ {'auths': {
+                    'drbd.io': {
+                      'username': tna_linbit_registry_username,
+                      'password': tna_linbit_registry_password,
+                      'auth': (tna_linbit_registry_username + ':' + tna_linbit_registry_password) | b64encode
+                    }
+                  }} | to_json | b64encode }}
+      no_log: true
+
+    - name: Apply LINSTOR Operator Subscription
+      kubernetes.core.k8s:
+        kubeconfig: "{{ _kubeconfig }}"
+        state: present
+        src: "{{ role_path }}/files/linstor-crds/subscription.yml"
+
+    - name: Wait for LINSTOR Operator CSV to succeed
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ _kubeconfig }}"
+        api_version: operators.coreos.com/v1alpha1
+        kind: ClusterServiceVersion
+        namespace: "{{ tna_linstor_namespace }}"
+      register: _csv_list
+      until: >-
+        _csv_list.resources | length > 0
+        and (_csv_list.resources | map(attribute='status.phase') | select('eq', 'Succeeded') | list | length > 0)
+      retries: "{{ (tna_csv_timeout / 10) | int }}"
+      delay: 10
+
+    - name: Apply LinstorCluster CR
+      kubernetes.core.k8s:
+        kubeconfig: "{{ _kubeconfig }}"
+        state: present
+        src: "{{ role_path }}/files/linstor-crds/linstor-cluster.yml"
+
+    - name: Apply SatelliteConfiguration for primary (storage) nodes
+      kubernetes.core.k8s:
+        kubeconfig: "{{ _kubeconfig }}"
+        state: present
+        template: satellite-config-primary.yml.j2
+
+    - name: Apply SatelliteConfiguration for arbiter nodes
+      kubernetes.core.k8s:
+        kubeconfig: "{{ _kubeconfig }}"
+        state: present
+        src: "{{ role_path }}/files/linstor-crds/satellite-config-arbiter.yml"
+
+    - name: Wait for LINSTOR satellites to come online
+      ansible.builtin.command:
+        cmd: >-
+          oc exec -n {{ tna_linstor_namespace }} deploy/linstor-controller --
+          linstor node list
+      environment:
+        KUBECONFIG: "{{ _kubeconfig }}"
+      register: _sat_list
+      until: >-
+        _sat_list.stdout is defined
+        and (_sat_list.stdout | regex_findall('Online') | length) >= 3
+      retries: "{{ (tna_satellite_timeout / 10) | int }}"
+      delay: 10
+      changed_when: false
+
+    - name: Apply StorageClasses
+      kubernetes.core.k8s:
+        kubeconfig: "{{ _kubeconfig }}"
+        state: present
+        src: "{{ role_path }}/files/linstor-crds/storage-classes.yml"
+
+    - name: Set LINSTOR encryption passphrase
+      ansible.builtin.command:
+        cmd: >-
+          oc exec -n {{ tna_linstor_namespace }} deploy/linstor-controller --
+          linstor encryption create-passphrase --passphrase {{ tna_linstor_encryption_passphrase }}
+      environment:
+        KUBECONFIG: "{{ _kubeconfig }}"
+      changed_when: true
+      ignore_errors: true

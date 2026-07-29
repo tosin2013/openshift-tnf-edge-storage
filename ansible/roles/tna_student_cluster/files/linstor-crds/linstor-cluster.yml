@@ -1,0 +1,44 @@
+---
+apiVersion: piraeus.io/v1
+kind: LinstorCluster
+metadata:
+  name: linstorcluster
+  namespace: linbit-sds
+spec:
+  tolerations:
+    - key: node-role.kubernetes.io/arbiter
+      operator: Exists
+      effect: NoSchedule
+    - key: linbit.com/arbiter
+      operator: Exists
+      effect: NoSchedule
+  controller:
+    podTemplate:
+      spec:
+        imagePullSecrets:
+          - name: drbdio-pull-secret
+  csiController:
+    podTemplate:
+      spec:
+        imagePullSecrets:
+          - name: drbdio-pull-secret
+  csiNode:
+    podTemplate:
+      spec:
+        imagePullSecrets:
+          - name: drbdio-pull-secret
+  highAvailabilityController:
+    podTemplate:
+      spec:
+        imagePullSecrets:
+          - name: drbdio-pull-secret
+  affinityController:
+    podTemplate:
+      spec:
+        imagePullSecrets:
+          - name: drbdio-pull-secret
+  nfsServer:
+    podTemplate:
+      spec:
+        imagePullSecrets:
+          - name: drbdio-pull-secret

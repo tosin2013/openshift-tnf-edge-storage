@@ -1,0 +1,41 @@
+---
+# Phase 6: Post-install — labels, taints, scheduling
+
+- name: Wait for cluster operators to settle before labeling
+  ansible.builtin.command:
+    cmd: >-
+      oc get clusteroperators --no-headers --kubeconfig {{ _kubeconfig }}
+  register: _co_settle
+  until: >-
+    _co_settle.rc == 0
+    and (_co_settle.stdout_lines | select('search', 'True\s+False\s+False') | list | length)
+        == (_co_settle.stdout_lines | length)
+  retries: 40
+  delay: 30
+  changed_when: false
+  ignore_errors: true
+
+- name: Get all cluster nodes
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ _kubeconfig }}"
+    kind: Node
+  register: _all_nodes
+
+- name: Label and taint each node
+  ansible.builtin.include_tasks: _label_node.yml
+  loop: "{{ _all_nodes.resources }}"
+  loop_control:
+    loop_var: _node
+
+- name: Allow workload scheduling on control-plane nodes
+  ansible.builtin.command:
+    cmd: >-
+      oc patch scheduler cluster --type=merge
+      -p '{"spec":{"mastersSchedulable":true}}'
+      --kubeconfig {{ _kubeconfig }}
+  register: _scheduler_patch
+  until: _scheduler_patch.rc == 0
+  retries: 5
+  delay: 15
+  changed_when: "'patched' in (_scheduler_patch.stdout | default(''))"
+  ignore_errors: true

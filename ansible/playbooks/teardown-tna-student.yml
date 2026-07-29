@@ -1,0 +1,86 @@
+---
+# Tear down a single TNA student cluster.
+#
+# Usage:
+#   ansible-playbook teardown-tna-student.yml \
+#     -e tna_guid=linbit-s1 \
+#     -e tna_base_domain=sandbox3493.opentlc.com
+
+- name: Teardown TNA Student Cluster
+  hosts: localhost
+  connection: local
+  gather_facts: true
+
+  vars:
+    tna_aws_region: us-east-2
+    tna_stack_name: "tna-{{ tna_guid }}"
+
+  tasks:
+    - name: Validate required variables
+      ansible.builtin.assert:
+        that:
+          - tna_guid is defined and tna_guid | length > 0
+          - tna_base_domain is defined and tna_base_domain | length > 0
+        fail_msg: "tna_guid and tna_base_domain are required"
+
+    - name: Check if CloudFormation stack exists
+      amazon.aws.cloudformation_info:
+        stack_name: "{{ tna_stack_name }}"
+        region: "{{ tna_aws_region }}"
+      register: _stack_info
+      ignore_errors: true
+
+    - name: Delete CloudFormation stack
+      amazon.aws.cloudformation:
+        stack_name: "{{ tna_stack_name }}"
+        state: absent
+        region: "{{ tna_aws_region }}"
+      when: _stack_info is not failed and _stack_info.cloudformation | length > 0
+
+    - name: Clean up Route53 records
+      block:
+        - name: Resolve hosted zone ID
+          ansible.builtin.command:
+            cmd: >-
+              aws route53 list-hosted-zones
+              --query "HostedZones[?Name=='{{ tna_base_domain }}.'].Id"
+              --output text
+          register: _r53_zone_id
+          changed_when: false
+
+        - name: Look up api-int record values
+          ansible.builtin.command:
+            cmd: >-
+              aws route53 list-resource-record-sets
+              --hosted-zone-id {{ _r53_zone_id.stdout | trim }}
+              --query "ResourceRecordSets[?Name=='api-int.{{ tna_guid }}.{{ tna_base_domain }}.']"
+              --output json
+          register: _api_int_records
+          changed_when: false
+          when: _r53_zone_id.stdout | trim | length > 0
+
+        - name: Delete api-int A record
+          ansible.builtin.command:
+            cmd: >-
+              aws route53 change-resource-record-sets
+              --hosted-zone-id {{ _r53_zone_id.stdout | trim }}
+              --change-batch '{{ _change_batch | to_json }}'
+          vars:
+            _record: "{{ (_api_int_records.stdout | from_json)[0] }}"
+            _change_batch:
+              Changes:
+                - Action: DELETE
+                  ResourceRecordSet: "{{ _record }}"
+          when:
+            - _api_int_records is not skipped
+            - (_api_int_records.stdout | from_json) | length > 0
+      ignore_errors: true
+
+    - name: Remove local output files
+      ansible.builtin.file:
+        path: "{{ ansible_env.HOME }}/Development/agnosticd-v2-output/{{ tna_guid }}"
+        state: absent
+
+    - name: Display teardown result
+      ansible.builtin.debug:
+        msg: "TNA student cluster {{ tna_guid }} teardown complete."

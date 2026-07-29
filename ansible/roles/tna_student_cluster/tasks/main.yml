@@ -1,0 +1,115 @@
+---
+- name: Validate required variables
+  ansible.builtin.assert:
+    that:
+      - tna_guid is defined and tna_guid | length > 0
+    fail_msg: "tna_guid is required"
+  tags: [always]
+
+- name: Validate AWS-specific variables
+  ansible.builtin.assert:
+    that:
+      - tna_base_domain is defined and tna_base_domain | length > 0
+    fail_msg: "tna_base_domain is required for AWS platform"
+  when: tna_platform == 'aws'
+  tags: [always]
+
+- name: Validate existing-cluster variables
+  ansible.builtin.assert:
+    that:
+      - tna_kubeconfig_path is defined and tna_kubeconfig_path | length > 0
+      - tna_arbiter_node_name is defined and tna_arbiter_node_name | length > 0
+    fail_msg: "tna_kubeconfig_path and tna_arbiter_node_name are required for existing-cluster platform"
+  when: tna_platform == 'existing-cluster'
+  tags: [always]
+
+# --- AWS infrastructure provisioning (phases 0-5b) ---
+
+- name: "Preflight — verify tools, secrets, and DNS"
+  ansible.builtin.include_tasks:
+    file: preflight.yml
+    apply:
+      tags: [preflight, phase0]
+  tags: [preflight, phase0]
+  when: tna_platform == 'aws'
+
+- name: "Phase 1 — Generate agent ISO and create/reuse AMI"
+  ansible.builtin.include_tasks:
+    file: phase1_iso_ami.yml
+    apply:
+      tags: [phase1]
+  tags: [phase1]
+  when: tna_platform == 'aws'
+
+- name: "Phase 2 — CloudFormation stack (VPC + EC2 + NLB + DNS)"
+  ansible.builtin.include_tasks:
+    file: phase2_cloudformation.yml
+    apply:
+      tags: [phase2]
+  tags: [phase2]
+  when: tna_platform == 'aws'
+
+- name: "Phase 3 — Collect instance metadata"
+  ansible.builtin.include_tasks:
+    file: phase3_mac_addresses.yml
+    apply:
+      tags: [phase3]
+  tags: [phase3]
+  when: tna_platform == 'aws'
+
+- name: "Phase 4 — Trigger install and monitor coreos-installer"
+  ansible.builtin.include_tasks:
+    file: phase4_trigger_install.yml
+    apply:
+      tags: [phase4]
+  tags: [phase4]
+  when: tna_platform == 'aws'
+
+- name: "Phase 5a — Volume swap (RHCOS becomes boot device)"
+  ansible.builtin.include_tasks:
+    file: phase5a_volume_swap.yml
+    apply:
+      tags: [phase5a]
+  tags: [phase5a]
+  when: tna_platform == 'aws'
+
+- name: "Phase 5b — Wait for OpenShift install to complete"
+  ansible.builtin.include_tasks:
+    file: phase5b_wait_install.yml
+    apply:
+      tags: [phase5b]
+  tags: [phase5b]
+  when: tna_platform == 'aws'
+
+# --- Existing-cluster discovery (replaces phases 0-5b) ---
+
+- name: "Discover existing cluster"
+  ansible.builtin.include_tasks:
+    file: discover_existing_cluster.yml
+    apply:
+      tags: [discover, phase0]
+  tags: [discover, phase0]
+  when: tna_platform == 'existing-cluster'
+
+# --- Platform-agnostic configuration (phases 6-8) ---
+
+- name: "Phase 6 — Node labels, taints, and scheduling"
+  ansible.builtin.include_tasks:
+    file: phase6_node_config.yml
+    apply:
+      tags: [phase6]
+  tags: [phase6]
+
+- name: "Phase 7 — LINSTOR operator and storage pools"
+  ansible.builtin.include_tasks:
+    file: phase7_linstor.yml
+    apply:
+      tags: [phase7]
+  tags: [phase7]
+
+- name: "Phase 8 — Readiness check and deployment info"
+  ansible.builtin.include_tasks:
+    file: phase8_readiness.yml
+    apply:
+      tags: [phase8]
+  tags: [phase8]

@@ -1,0 +1,12 @@
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: linstor-operator
+  namespace: linbit-sds
+spec:
+  channel: stable-v2
+  name: linstor-operator
+  source: certified-operators
+  sourceNamespace: openshift-marketplace
+  installPlanApproval: Automatic

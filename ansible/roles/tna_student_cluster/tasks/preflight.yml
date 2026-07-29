@@ -1,0 +1,94 @@
+---
+# Preflight — verify tools, secrets, and DNS
+
+- name: Check required CLI tools are installed
+  ansible.builtin.command: "which {{ item }}"
+  changed_when: false
+  loop:
+    - aws
+    - oc
+    - jq
+    - openshift-install
+
+- name: Verify pull secret exists
+  ansible.builtin.stat:
+    path: "{{ tna_pull_secret_path }}"
+  register: _pull_secret_stat
+  failed_when: not _pull_secret_stat.stat.exists
+
+- name: Verify SSH public key exists
+  ansible.builtin.stat:
+    path: "{{ tna_ssh_key_path }}"
+  register: _ssh_key_stat
+  failed_when: not _ssh_key_stat.stat.exists
+
+- name: Verify CloudFormation template exists
+  ansible.builtin.stat:
+    path: "{{ tna_cfn_template }}"
+  register: _cfn_stat
+  failed_when: not _cfn_stat.stat.exists
+
+- name: Read pull secret
+  ansible.builtin.slurp:
+    src: "{{ tna_pull_secret_path }}"
+  register: _pull_secret_raw
+  no_log: true
+
+- name: Set pull secret fact
+  ansible.builtin.set_fact:
+    tna_pull_secret: "{{ _pull_secret_raw.content | b64decode | regex_replace('\\n', '') }}"
+  no_log: true
+
+- name: Read SSH public key
+  ansible.builtin.slurp:
+    src: "{{ tna_ssh_key_path }}"
+  register: _ssh_key_raw
+
+- name: Set SSH key fact
+  ansible.builtin.set_fact:
+    tna_ssh_key: "{{ _ssh_key_raw.content | b64decode | trim }}"
+
+- name: Derive SSH private key path
+  ansible.builtin.set_fact:
+    tna_ssh_private_key: "{{ tna_ssh_key_path | regex_replace('\\.pub$', '') }}"
+
+- name: Resolve Route53 hosted zone ID
+  amazon.aws.route53_zone:
+    zone: "{{ tna_base_domain }}"
+    state: present
+  register: _r53_zone
+  check_mode: true
+
+- name: Set hosted zone fact
+  ansible.builtin.set_fact:
+    tna_hosted_zone_id: "{{ _r53_zone.zone_id }}"
+
+- name: Create output directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - "{{ tna_assets_dir }}"
+    - "{{ tna_output_root }}/{{ tna_guid }}/auth"
+
+- name: Load LINBIT registry credentials from secrets file
+  when: tna_linbit_registry_username | length == 0
+  block:
+    - name: Check secrets file exists
+      ansible.builtin.stat:
+        path: "{{ tna_secrets_file }}"
+      register: _secrets_stat
+
+    - name: Read secrets file
+      ansible.builtin.include_vars:
+        file: "{{ tna_secrets_file }}"
+        name: _agd_secrets
+      when: _secrets_stat.stat.exists
+
+    - name: Set LINBIT credentials from secrets
+      ansible.builtin.set_fact:
+        tna_linbit_registry_username: "{{ _agd_secrets.linbit_registry_username | default('') }}"
+        tna_linbit_registry_password: "{{ _agd_secrets.linbit_registry_password | default('') }}"
+      when: _secrets_stat.stat.exists and _agd_secrets is defined
+      no_log: true

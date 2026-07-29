@@ -1,4 +1,4 @@
-.PHONY: setup deploy teardown destroy dry-run stop start status credentials check check-quota request-quotas
+.PHONY: setup deploy teardown destroy dry-run stop start status credentials check check-quota request-quotas deploy-student teardown-student build-ee
 
 # Interactive onboarding wizard (config, secrets, validation, quotas)
 setup:
@@ -47,3 +47,29 @@ check-quota: request-quotas
 
 request-quotas:
 	./agnosticd/request-quotas.sh
+
+# ── Ansible Role (TNA student clusters) ──────────────────────────
+# Deploy a single TNA student cluster via Ansible.
+# GUID= and BASE_DOMAIN= are required.  TAGS= limits to specific phases.
+#   make deploy-student GUID=linbit-s1 BASE_DOMAIN=sandbox3493.opentlc.com
+#   make deploy-student GUID=linbit-s1 BASE_DOMAIN=sandbox3493.opentlc.com TAGS=phase6,phase7,phase8
+deploy-student:
+	ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook \
+	  ansible/playbooks/deploy-tna-student.yml \
+	  -e tna_guid=$(GUID) \
+	  -e tna_base_domain=$(BASE_DOMAIN) \
+	  $(if $(TAGS),--tags $(TAGS),) \
+	  $(ARGS)
+
+# Tear down a single TNA student cluster.
+#   make teardown-student GUID=linbit-s1 BASE_DOMAIN=sandbox3493.opentlc.com
+teardown-student:
+	ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook \
+	  ansible/playbooks/teardown-tna-student.yml \
+	  -e tna_guid=$(GUID) \
+	  -e tna_base_domain=$(BASE_DOMAIN) \
+	  $(ARGS)
+
+# Build the Execution Environment image for containerised runs.
+build-ee:
+	ansible-builder build -f ansible/execution-environment.yml -t tna-student-ee:latest

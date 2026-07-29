@@ -1,0 +1,10 @@
+---
+skip_list:
+  # tna_ prefix is intentionally short for usability; tna_student_cluster_ is too verbose
+  - var-naming[no-role-prefix]
+  # Template expressions in task names improve readability for looped tasks
+  - name[template]
+
+warn_list:
+  # ignore_errors is acceptable for best-effort cleanup and optional steps
+  - ignore-errors
