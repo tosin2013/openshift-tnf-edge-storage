@@ -26,14 +26,14 @@ The `allow-two-primaries` flag is guarded by a Kubernetes label gate (`vm.kubevi
 
 Confirm the OpenShift Virtualization Operator is installed:
 
-[source,bash,role=execute]
+[source,bash,role=execute,subs="attributes+"]
 ----
 oc get csv -n openshift-cnv | grep kubevirt
 ----
 
 Verify the HyperConverged CR is healthy:
 
-[source,bash,role=execute]
+[source,bash,role=execute,subs="attributes+"]
 ----
 oc get hyperconverged kubevirt-hyperconverged -n openshift-cnv -o jsonpath='{.status.conditions[?(@.type=="Available")].status}'
 ----
@@ -44,7 +44,7 @@ The output should be `True`.
 
 Inspect the block-RWX StorageClass created for VM disks:
 
-[source,bash,role=execute]
+[source,bash,role=execute,subs="attributes+"]
 ----
 oc get sc linbit-rwx-virt -o yaml
 ----
@@ -59,21 +59,21 @@ Key parameters to note:
 
 Inspect the VirtualMachine resource:
 
-[source,bash,role=execute]
+[source,bash,role=execute,subs="attributes+"]
 ----
 oc get vm -n {workshop_namespace}
 ----
 
 View the VM's disk PVC:
 
-[source,bash,role=execute]
+[source,bash,role=execute,subs="attributes+"]
 ----
 oc get pvc -n {workshop_namespace} -l vm.kubevirt.io/name
 ----
 
 Check which node the VM instance (VMI) is currently running on:
 
-[source,bash,role=execute]
+[source,bash,role=execute,subs="attributes+"]
 ----
 oc get vmi -n {workshop_namespace} -o wide
 ----
@@ -82,14 +82,14 @@ oc get vmi -n {workshop_namespace} -o wide
 
 If the VM is not already running, set the `runStrategy` to `Always`:
 
-[source,bash,role=execute]
+[source,bash,role=execute,subs="attributes+"]
 ----
 oc patch vm sample-vm -n {workshop_namespace} --type=merge -p '{"spec":{"runStrategy":"Always"}}'
 ----
 
 Wait for the VMI to reach `Running`:
 
-[source,bash,role=execute]
+[source,bash,role=execute,subs="attributes+"]
 ----
 oc wait --for=jsonpath='{.status.phase}'=Running vmi/sample-vm -n {workshop_namespace} --timeout=120s
 ----
@@ -100,7 +100,7 @@ TIP: If `virtctl` is installed, you can also use `virtctl start sample-vm -n {wo
 
 View the DRBD resource backing the VM disk:
 
-[source,bash,role=execute]
+[source,bash,role=execute,subs="attributes+"]
 ----
 oc exec -n {linbit_namespace} deploy/linstor-controller -- linstor resource list
 ----
@@ -111,7 +111,7 @@ Note which node shows `InUse` -- this is the current VM host.
 
 Initiate a live migration by creating a `VirtualMachineInstanceMigration` resource:
 
-[source,bash,role=execute]
+[source,bash,role=execute,subs="attributes+"]
 ----
 cat <<'EOF' | oc apply -f -
 apiVersion: kubevirt.io/v1
@@ -126,7 +126,7 @@ EOF
 
 Watch the migration progress:
 
-[source,bash,role=execute]
+[source,bash,role=execute,subs="attributes+"]
 ----
 oc get vmim -n {workshop_namespace} -w
 ----
@@ -137,7 +137,7 @@ TIP: If `virtctl` is installed, you can also use `virtctl migrate sample-vm -n {
 
 Clean up the migration resource for potential future migrations:
 
-[source,bash,role=execute]
+[source,bash,role=execute,subs="attributes+"]
 ----
 oc delete vmim sample-vm-migration -n {workshop_namespace} --ignore-not-found
 ----
@@ -147,14 +147,14 @@ oc delete vmim sample-vm-migration -n {workshop_namespace} --ignore-not-found
 During migration, DRBD briefly runs in dual-primary mode.
 After migration completes, verify the new node is the sole `InUse` holder:
 
-[source,bash,role=execute]
+[source,bash,role=execute,subs="attributes+"]
 ----
 oc exec -n {linbit_namespace} deploy/linstor-controller -- linstor resource list
 ----
 
 Confirm the VMI is now on a different node:
 
-[source,bash,role=execute]
+[source,bash,role=execute,subs="attributes+"]
 ----
 oc get vmi -n {workshop_namespace} -o wide
 ----
@@ -164,7 +164,7 @@ oc get vmi -n {workshop_namespace} -o wide
 If you had a console session open to the VM, verify it remained connected throughout the migration.
 You can also check the VM uptime:
 
-[source,bash,role=execute]
+[source,bash,role=execute,subs="attributes+"]
 ----
 virtctl console sample-vm -n {workshop_namespace}
 ----
@@ -177,7 +177,7 @@ Press `Ctrl+]` to exit the console.
 The label gate prevents non-VM pods from using block RWX volumes.
 Attempt to create a regular pod using the Virt RWX class:
 
-[source,bash,role=execute]
+[source,bash,role=execute,subs="attributes+"]
 ----
 cat <<'EOF' | oc apply -f -
 apiVersion: v1
@@ -218,7 +218,7 @@ Observe the behavior -- without the `vm.kubevirt.io/name` label, the dual-primar
 
 Clean up the test:
 
-[source,bash,role=execute]
+[source,bash,role=execute,subs="attributes+"]
 ----
 oc delete pod test-rwx-pod -n {workshop_namespace} --ignore-not-found
 oc delete pvc test-rwx-block -n {workshop_namespace} --ignore-not-found

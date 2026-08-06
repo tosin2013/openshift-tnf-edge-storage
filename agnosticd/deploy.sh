@@ -391,6 +391,176 @@ else
 fi
 
 # -----------------------------------------------------------------
+# Phase 4: Deploy per-student Showroom instances on the hub (Model A)
+# Each student gets a dedicated Showroom namespace on the hub cluster,
+# configured with their own cluster's API URL and credentials.
+# -----------------------------------------------------------------
+echo "============================================================"
+echo "Phase 4: Deploying per-student Showroom instances on hub"
+echo "============================================================"
+
+export KUBECONFIG="$KUBECONFIG_PATH"
+
+SHOWROOM_GIT_REPO="${SHOWROOM_GIT_REPO:-https://github.com/tosin2013/openshift-tnf-edge-storage.git}"
+SHOWROOM_GIT_REF="${SHOWROOM_GIT_REF:-main}"
+SHOWROOM_IMAGE="${SHOWROOM_IMAGE:-quay.io/rhpds/openshift-showroom:latest}"
+SHOWROOM_TERMINAL_IMAGE="${SHOWROOM_TERMINAL_IMAGE:-quay.io/rhpds/openshift-showroom-terminal-ocp:latest}"
+
+STUDENT_OUTPUT_ROOT="${AGNOSTICD_ROOT}/../agnosticd-v2-output"
+
+deploy_student_showroom() {
+  local student_num="$1"
+  local student_guid="${BASE_GUID}-s${student_num}"
+  local ns="showroom-student-${student_num}"
+
+  # Discover student cluster credentials
+  local student_output="${STUDENT_OUTPUT_ROOT}/${student_guid}"
+  local student_kubeadmin_pw=""
+  local student_api_url=""
+  local student_ingress_domain=""
+
+  # Find kubeadmin password
+  for pw_file in \
+    "${student_output}/auth/kubeadmin-password" \
+    "${student_output}/ocp4-cluster/auth/kubeadmin-password"; do
+    if [[ -f "$pw_file" ]]; then
+      student_kubeadmin_pw="$(cat "$pw_file")"
+      break
+    fi
+  done
+  [[ -n "$student_kubeadmin_pw" ]] || { echo "WARN: kubeadmin-password not found for $student_guid"; student_kubeadmin_pw="check-deployment-output"; }
+
+  # Find student API URL from deployment info
+  local deploy_info="${student_output}/deployment_info.txt"
+  if [[ -f "$deploy_info" ]]; then
+    student_api_url="$(grep '^api_url=' "$deploy_info" | cut -d= -f2-)"
+  fi
+  # Fallback: construct from GUID and base domain
+  if [[ -z "$student_api_url" ]]; then
+    local base_domain="${BASE_DOMAIN:-${ACCOUNT}.opentlc.com}"
+    student_api_url="https://api.${student_guid}.${base_domain}:6443"
+  fi
+
+  student_ingress_domain="$(echo "$student_api_url" | sed 's|https://api\.|apps.|; s|:6443||')"
+
+  echo "==> Student $student_num Showroom (ns=$ns)"
+  echo "    API:     $student_api_url"
+  echo "    Ingress: $student_ingress_domain"
+
+  # Create namespace
+  oc create namespace "$ns" 2>/dev/null || true
+  oc label namespace "$ns" purpose=showroom student="student-${student_num}" --overwrite
+
+  # ConfigMap with Antora user_data for this student's cluster
+  cat <<CMEOF | oc apply -f -
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: showroom-user-data
+  namespace: ${ns}
+data:
+  guid: "${student_guid}"
+  openshift_cluster_ingress_domain: "${student_ingress_domain}"
+  api_url: "${student_api_url}"
+  admin_password: "${student_kubeadmin_pw}"
+CMEOF
+
+  # Showroom Deployment
+  cat <<DEPLEOF | oc apply -f -
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: showroom
+  namespace: ${ns}
+  labels:
+    app: showroom
+    student: student-${student_num}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: showroom
+  template:
+    metadata:
+      labels:
+        app: showroom
+        student: student-${student_num}
+    spec:
+      containers:
+        - name: showroom
+          image: ${SHOWROOM_IMAGE}
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            - name: GIT_REPO_URL
+              value: "${SHOWROOM_GIT_REPO}"
+            - name: GIT_REPO_REF
+              value: "${SHOWROOM_GIT_REF}"
+            - name: GUID
+              valueFrom:
+                configMapKeyRef:
+                  name: showroom-user-data
+                  key: guid
+          envFrom:
+            - configMapRef:
+                name: showroom-user-data
+        - name: terminal
+          image: ${SHOWROOM_TERMINAL_IMAGE}
+          ports:
+            - containerPort: 7681
+              name: terminal
+          env:
+            - name: OC_LOGIN_COMMAND
+              value: "oc login ${student_api_url} -u kubeadmin -p '${student_kubeadmin_pw}' --insecure-skip-tls-verify"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: showroom
+  namespace: ${ns}
+spec:
+  selector:
+    app: showroom
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+    - name: terminal
+      port: 7681
+      targetPort: 7681
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: showroom
+  namespace: ${ns}
+  labels:
+    app: showroom
+spec:
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+  to:
+    kind: Service
+    name: showroom
+    weight: 100
+  port:
+    targetPort: http
+DEPLEOF
+
+  local route_host
+  route_host="$(oc get route showroom -n "$ns" -o jsonpath='{.spec.host}' 2>/dev/null || echo "pending")"
+  echo "    Showroom URL: https://${route_host}"
+}
+
+for i in $(seq 1 "$NUM_STUDENTS"); do
+  deploy_student_showroom "$i"
+done
+
+unset KUBECONFIG
+
+# -----------------------------------------------------------------
 # Summary
 # -----------------------------------------------------------------
 echo ""
@@ -401,7 +571,14 @@ echo "Hub cluster:      $HUB_GUID"
 echo "Hub API:          $HUB_API_URL"
 echo "Student clusters: $NUM_STUDENTS"
 echo ""
+echo "Student Showroom URLs:"
+for i in $(seq 1 "$NUM_STUDENTS"); do
+  KUBECONFIG="$KUBECONFIG_PATH" oc get route showroom \
+    -n "showroom-student-${i}" \
+    -o jsonpath="  Student ${i}: https://{.spec.host}" 2>/dev/null
+  echo ""
+done
+echo ""
 cat "$MANIFEST"
 echo ""
-echo "Showroom: Check hub cluster routes for Showroom URL"
 echo "RHACM:   KUBECONFIG=$KUBECONFIG_PATH oc get managedclusters"

@@ -15,11 +15,32 @@ DRBD handles block-level replication with in-kernel efficiency -- no userspace I
 
 In this module you will explore a running LINSTOR deployment and understand how storage pools, diskful replicas, and diskless tiebreakers map to your cluster topology.
 
+== Step 0: Connect to Your Cluster
+
+Log in to your assigned student cluster from the Showroom terminal:
+
+[source,bash,role=execute,subs="attributes+"]
+----
+oc login {api_url} -u {admin_user} -p '{admin_password}' --insecure-skip-tls-verify
+----
+
+Verify you are connected to the correct cluster:
+
+[source,bash,role=execute,subs="attributes+"]
+----
+oc cluster-info | head -1
+----
+
+You should see your cluster's API URL in the output.
+Open the OpenShift Console in a new browser tab to follow along:
+
+{openshift_console_url}[Launch Console,window=_blank]
+
 == Step 1: Verify LINSTOR Pods
 
 Confirm the LINSTOR Operator and its components are running:
 
-[source,bash,role=execute]
+[source,bash,role=execute,subs="attributes+"]
 ----
 oc get pods -n {linbit_namespace}
 ----
@@ -34,7 +55,7 @@ You should see pods for:
 
 Use the LINSTOR CLI to list registered nodes:
 
-[source,bash,role=execute]
+[source,bash,role=execute,subs="attributes+"]
 ----
 oc exec -n {linbit_namespace} deploy/linstor-controller -- linstor node list
 ----
@@ -48,7 +69,7 @@ Each node shows its type:
 
 View the storage pools that back DRBD volumes:
 
-[source,bash,role=execute]
+[source,bash,role=execute,subs="attributes+"]
 ----
 oc exec -n {linbit_namespace} deploy/linstor-controller -- linstor storage-pool list
 ----
@@ -70,7 +91,7 @@ There is no diskless tiebreaker; instead, fencing (STONITH) resolves split-brain
 
 Review the pre-created StorageClasses:
 
-[source,bash,role=execute]
+[source,bash,role=execute,subs="attributes+"]
 ----
 oc get sc
 ----
@@ -92,7 +113,7 @@ You should find at least two LINSTOR-backed classes:
 
 Inspect the parameters on the locality class:
 
-[source,bash,role=execute]
+[source,bash,role=execute,subs="attributes+"]
 ----
 oc get sc linbit-rwo-locality -o yaml
 ----
@@ -103,7 +124,7 @@ Note the `volumeBindingMode: WaitForFirstConsumer` and the LINSTOR parameters fo
 
 Provision a test volume to see the LINSTOR provisioning cycle:
 
-[source,bash,role=execute]
+[source,bash,role=execute,subs="attributes+"]
 ----
 cat <<'EOF' | oc apply -f -
 apiVersion: v1
@@ -123,7 +144,7 @@ EOF
 
 Check the PVC status:
 
-[source,bash,role=execute]
+[source,bash,role=execute,subs="attributes+"]
 ----
 oc get pvc test-linstor-pvc -n {workshop_namespace}
 ----
@@ -133,7 +154,7 @@ This is by design -- LINSTOR delays provisioning to co-locate the primary replic
 
 Create a consumer pod to trigger binding:
 
-[source,bash,role=execute]
+[source,bash,role=execute,subs="attributes+"]
 ----
 cat <<'EOF' | oc apply -f -
 apiVersion: v1
@@ -158,7 +179,7 @@ EOF
 
 Watch the PVC bind:
 
-[source,bash,role=execute]
+[source,bash,role=execute,subs="attributes+"]
 ----
 oc get pvc test-linstor-pvc -n {workshop_namespace} -w
 ----
@@ -169,7 +190,7 @@ Press `Ctrl+C` once the PVC shows `Bound`.
 
 View the DRBD resource that LINSTOR created for the PVC:
 
-[source,bash,role=execute]
+[source,bash,role=execute,subs="attributes+"]
 ----
 oc exec -n {linbit_namespace} deploy/linstor-controller -- linstor resource list
 ----
@@ -180,7 +201,7 @@ Identify which nodes hold *diskful* replicas (InUse or UpToDate) and which are *
 
 Delete the test resources:
 
-[source,bash,role=execute]
+[source,bash,role=execute,subs="attributes+"]
 ----
 oc delete pod test-pvc-consumer -n {workshop_namespace} --grace-period=0
 oc delete pvc test-linstor-pvc -n {workshop_namespace}
@@ -188,7 +209,7 @@ oc delete pvc test-linstor-pvc -n {workshop_namespace}
 
 Verify the LINSTOR resource was cleaned up:
 
-[source,bash,role=execute]
+[source,bash,role=execute,subs="attributes+"]
 ----
 oc exec -n {linbit_namespace} deploy/linstor-controller -- linstor resource list
 ----

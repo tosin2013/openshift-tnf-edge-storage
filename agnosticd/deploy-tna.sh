@@ -926,6 +926,14 @@ reclaimPolicy: Delete
 allowVolumeExpansion: true
 EOF
 
+  # Enable thin-pool overprovisioning so CSI capacity is reported correctly.
+  # Without this, thin pools show "0 KiB free" and PVC provisioning fails.
+  info "Enabling thin-pool overprovisioning (ratio 20:1) ..."
+  oc exec -n linbit-sds deploy/linstor-controller -- \
+    linstor storage-pool-definition set-property lvm-thin MaxFreeCapacityOversubscriptionRatio 20 2>/dev/null || true
+  oc exec -n linbit-sds deploy/linstor-controller -- \
+    linstor storage-pool-definition set-property lvm-thin MaxTotalCapacityOversubscriptionRatio 20 2>/dev/null || true
+
   # Set encryption passphrase (needed for S3 backup remotes)
   info "Setting LINSTOR encryption passphrase ..."
   oc exec -n linbit-sds deploy/linstor-controller -- \
@@ -941,6 +949,83 @@ fi
 info "============================================================"
 info "Phase 8: Applying workloads"
 info "============================================================"
+
+# Create workshop namespace used by all modules
+oc create namespace linbit-workshop 2>/dev/null || true
+oc label namespace linbit-workshop purpose=workshop --overwrite
+
+# Deploy OpenShift GitOps (ArgoCD) — required by field_content and Module 5
+info "Installing OpenShift GitOps operator ..."
+cat <<'EOF' | oc apply -f -
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: openshift-gitops-operator
+  namespace: openshift-operators
+spec:
+  channel: latest
+  name: openshift-gitops-operator
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace
+  installPlanApproval: Automatic
+EOF
+
+# Deploy OpenShift Virtualization — required by Module 3
+info "Installing OpenShift Virtualization operator ..."
+oc create namespace openshift-cnv 2>/dev/null || true
+cat <<'EOF' | oc apply -f -
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: kubevirt-hyperconverged-group
+  namespace: openshift-cnv
+spec:
+  targetNamespaces:
+    - openshift-cnv
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: kubevirt-hyperconverged
+  namespace: openshift-cnv
+spec:
+  channel: stable
+  name: kubevirt-hyperconverged
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace
+  installPlanApproval: Automatic
+EOF
+
+# Wait for GitOps CSV
+info "Waiting for GitOps operator ..."
+for _csv_wait in $(seq 1 30); do
+  GITOPS_CSV="$(oc get csv -n openshift-operators -l operators.coreos.com/openshift-gitops-operator.openshift-operators -o jsonpath='{.items[0].status.phase}' 2>/dev/null || true)"
+  [[ "$GITOPS_CSV" == "Succeeded" ]] && break
+  sleep 10
+done
+
+# Wait for CNV CSV then create HyperConverged
+info "Waiting for Virtualization operator ..."
+for _csv_wait in $(seq 1 60); do
+  CNV_CSV="$(oc get csv -n openshift-cnv -o jsonpath='{.items[0].status.phase}' 2>/dev/null || true)"
+  [[ "$CNV_CSV" == "Succeeded" ]] && break
+  sleep 10
+done
+
+if [[ "${CNV_CSV:-}" == "Succeeded" ]]; then
+  info "Creating HyperConverged CR ..."
+  cat <<'EOF' | oc apply -f -
+apiVersion: hco.kubevirt.io/v1beta1
+kind: HyperConverged
+metadata:
+  name: kubevirt-hyperconverged
+  namespace: openshift-cnv
+spec: {}
+EOF
+  ok "OpenShift Virtualization configured."
+else
+  warn "OpenShift Virtualization operator not ready — HyperConverged CR skipped."
+fi
 
 info "Cluster $CLUSTER_NAME is ready for workload deployment."
 info "  KUBECONFIG=$KUBECONFIG_OUT"
