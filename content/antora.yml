@@ -8,12 +8,12 @@ asciidoc:
   attributes:
     experimental: true
     page-pagination: true
-    guid: "%guid%"
-    openshift_cluster_ingress_domain: "%openshift_cluster_ingress_domain%"
-    openshift_console_url: "https://console-openshift-console.apps.%openshift_cluster_ingress_domain%"
-    api_url: "%openshift_api_url%"
-    admin_user: "%openshift_cluster_admin_username%"
-    admin_password: "%openshift_cluster_admin_password%"
+    guid: "CHANGE_ME"
+    openshift_cluster_ingress_domain: "apps.cluster.example.com"
+    openshift_console_url: "https://console-openshift-console.apps.cluster.example.com"
+    openshift_api_url: "https://api.cluster.example.com:6443"
+    openshift_cluster_admin_username: "kubeadmin"
+    openshift_cluster_admin_password: "CHANGE_ME"
     ssh_user: "lab-user"
     linbit_namespace: "linbit-sds"
     workshop_namespace: "linbit-workshop"

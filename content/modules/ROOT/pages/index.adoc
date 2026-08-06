@@ -100,10 +100,10 @@ Use the following credentials throughout the lab:
 | {openshift_console_url}[Launch Console,window=_blank]
 
 | Admin User
-| `{admin_user}`
+| `{openshift_cluster_admin_username}`
 
 | Admin Password
-| `{admin_password}`
+| `{openshift_cluster_admin_password}`
 |===
 
 == Ready?
