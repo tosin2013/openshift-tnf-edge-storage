@@ -13,7 +13,25 @@ LINBIT SDS separates the *control plane* (LINSTOR Controller) from the *data pla
 The Controller manages resource definitions, storage pools, and scheduling.
 DRBD handles block-level replication with in-kernel efficiency -- no userspace I/O overhead.
 
-In this module you will explore a running LINSTOR deployment and understand how storage pools, diskful replicas, and diskless tiebreakers map to your cluster topology.
+Your student cluster uses a *Two-Node with Arbiter (TNA)* topology -- the standard edge deployment pattern:
+
+[cols="1,1,2"]
+|===
+| Role | Count | Function
+
+| *Primary node*
+| 2
+| Runs workloads and holds diskful DRBD replicas on local EBS storage.
+
+| *Arbiter node*
+| 1
+| Lightweight node that participates in DRBD quorum votes but stores no data.
+Breaks ties when one primary goes down, preventing split-brain.
+|===
+
+This gives you the resilience of 3-way replication at the cost of only 2 full storage nodes -- a practical trade-off for edge sites where hardware is limited.
+
+In this module you will explore the running LINSTOR deployment and see how storage pools, diskful replicas, and the diskless arbiter map to this topology.
 
 == Step 0: Connect to Your Cluster
 
@@ -21,7 +39,7 @@ Log in to your assigned student cluster from the Showroom terminal:
 
 [source,bash,role=execute,subs="attributes+"]
 ----
-oc login {openshift_api_url} -u {openshift_cluster_admin_username} -p '{openshift_cluster_admin_password}' --insecure-skip-tls-verify
+oc login {openshift_api_url} -u {openshift_cluster_admin_username} -p '{openshift_cluster_admin_password}'
 ----
 
 Verify you are connected to the correct cluster:
@@ -47,9 +65,14 @@ oc get pods -n {linbit_namespace}
 
 You should see pods for:
 
-* `linstor-controller` -- the control-plane manager
-* `linstor-csi-*` -- the CSI driver (controller + node DaemonSet)
-* `linstor-satellite-*` -- one per schedulable node, running the DRBD data plane
+* `linstor-controller` -- the control-plane manager (single instance)
+* `linstor-satellite.*` -- one per schedulable node, running the DRBD data plane
+* `linstor-csi-controller` -- the CSI sidecar that handles provisioning requests
+* `linstor-csi-node-*` -- DaemonSet that mounts DRBD volumes into pods on each node
+* `linstor-csi-nfs-server-*` -- NFS gateway DaemonSet enabling RWX access modes
+* `ha-controller-*` -- DRBD Reactor for automatic LINSTOR Controller failover
+* `linstor-affinity-controller` -- ensures pods are scheduled on nodes where their DRBD primary resides
+* `linstor-operator-controller-manager` -- the Operator managing the lifecycle of all components above
 
 == Step 2: List LINSTOR Nodes
 
@@ -60,10 +83,15 @@ Use the LINSTOR CLI to list registered nodes:
 oc exec -n {linbit_namespace} deploy/linstor-controller -- linstor node list
 ----
 
-Each node shows its type:
+All three nodes register as *SATELLITE* type -- they run the DRBD kernel module and can host diskful or diskless resources.
+The LINSTOR Controller runs as a separate pod (`linstor-controller`) and does not appear in this list.
 
-* *SATELLITE* -- runs DRBD, hosts diskful or diskless resources
-* *CONTROLLER* -- manages the LINSTOR state (may share a satellite role)
+In a Two-Node with Arbiter (TNA) topology you have:
+
+* *2 primary nodes* -- hold diskful replicas backed by real storage
+* *1 arbiter node* -- participates in DRBD quorum votes without storing data (diskless)
+
+You will see which node is the arbiter in the next step.
 
 == Step 3: Inspect Storage Pools
 
@@ -74,18 +102,27 @@ View the storage pools that back DRBD volumes:
 oc exec -n {linbit_namespace} deploy/linstor-controller -- linstor storage-pool list
 ----
 
-[tabs]
-====
-AWS (TNA / Compact)::
-+
-You should see EBS-backed LVM pools on each primary node.
-The arbiter node (if present) shows a *DfltDisklessStorPool* -- it contributes to DRBD quorum without storing data.
+Every node has a `DfltDisklessStorPool` (DRBD can always create a diskless resource anywhere).
+The key is which nodes *also* have an `lvm-thin` pool -- those are the primary nodes with real EBS-backed storage.
 
-KVM / Bare Metal (TNF)::
-+
-You should see LVM pools backed by local or virtio disks on both nodes.
-There is no diskless tiebreaker; instead, fencing (STONITH) resolves split-brain.
-====
+[cols="1,1,2"]
+|===
+| Pool | Driver | Meaning
+
+| `lvm-thin`
+| `LVM_THIN`
+| Thin-provisioned LVM pool on an EBS volume.
+Thin provisioning lets LINSTOR overcommit storage -- space is allocated on write, not at PVC creation time.
+
+| `DfltDisklessStorPool`
+| `DISKLESS`
+| The node can host diskless resources (quorum voters, tie-breakers) but stores no data locally.
+|===
+
+In your TNA cluster:
+
+* The 2 nodes with `lvm-thin` pools (~50 GiB each) are the *primary nodes*.
+* The node with *only* `DfltDisklessStorPool` is the *arbiter* -- it votes in DRBD quorum decisions but holds no data.
 
 == Step 4: Examine StorageClasses
 
@@ -118,7 +155,31 @@ Inspect the parameters on the locality class:
 oc get sc linbit-rwo-locality -o yaml
 ----
 
-Note the `volumeBindingMode: WaitForFirstConsumer` and the LINSTOR parameters for replica placement.
+Look for these key parameters:
+
+[cols="1,2"]
+|===
+| Parameter | Why it matters
+
+| `volumeBindingMode: WaitForFirstConsumer`
+| LINSTOR waits until a pod is scheduled before provisioning.
+This lets the affinity controller co-locate the DRBD primary with the consumer pod, avoiding network hops for reads.
+
+| `autoPlace: "2"`
+| Create 2 diskful replicas.
+On a 3-node TNA cluster the third node automatically becomes a diskless quorum voter.
+
+| `auto-quorum: io-error`
+| DRBD automatically determines quorum based on replica count.
+If a node loses the majority, it returns I/O errors instead of risking split-brain writes.
+
+| `on-no-quorum: io-error`
+| When quorum is lost, the surviving minority stops accepting writes.
+This prevents data divergence and is the safe default for edge deployments.
+
+| `fstype: xfs`
+| Volumes are formatted with XFS, which supports online grow and is the RHEL default.
+|===
 
 == Step 5: Create a Test PVC
 
@@ -163,10 +224,18 @@ metadata:
   name: test-pvc-consumer
   namespace: {workshop_namespace}
 spec:
+  securityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
   containers:
     - name: consumer
       image: registry.access.redhat.com/ubi9/ubi-minimal:latest
       command: ["sleep", "300"]
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
       volumeMounts:
         - name: data
           mountPath: /data
@@ -195,7 +264,30 @@ View the DRBD resource that LINSTOR created for the PVC:
 oc exec -n {linbit_namespace} deploy/linstor-controller -- linstor resource list
 ----
 
-Identify which nodes hold *diskful* replicas (InUse or UpToDate) and which are *diskless* (TieBreaker or DisklessClient).
+Look at the columns:
+
+[cols="1,2"]
+|===
+| Column | What to look for
+
+| *Usage*
+| `InUse` = this node is actively serving I/O to the consumer pod. `Unused` = replica exists but no local consumer.
+
+| *State*
+| `UpToDate` = diskful replica fully synced. `Diskless` = quorum voter with no local data.
+
+| *Vote*
+| `Yes` on all three nodes means DRBD has a 3-way quorum. Any two nodes agreeing can continue serving I/O -- this is how TNA survives a single node failure.
+
+| *Conns*
+| `Ok` means the replication links between nodes are healthy.
+|===
+
+In your output you should see:
+
+* 1 node with `InUse` + `UpToDate` -- the primary, co-located with the consumer pod
+* 1 node with `Unused` + `UpToDate` -- the secondary diskful replica
+* 1 node with `Unused` + `Diskless` -- the arbiter, voting but storing nothing
 
 == Step 7: Clean Up
 
@@ -219,10 +311,11 @@ oc exec -n {linbit_namespace} deploy/linstor-controller -- linstor resource list
 In this module you:
 
 * Verified the LINSTOR control plane (Controller) and data plane (Satellites) are healthy
-* Identified storage pool types matching your cluster topology
-* Examined pre-configured StorageClasses for RWO locality and RWX block modes
-* Created and deleted a test PVC to observe the LINSTOR/DRBD provisioning cycle
+* Mapped the TNA topology: 2 primary nodes with LVM-thin storage pools + 1 diskless arbiter
+* Examined StorageClass parameters (`autoPlace`, quorum policy, WaitForFirstConsumer) and understood their edge implications
+* Created a test PVC and observed the full provisioning cycle: Pending -> consumer pod scheduled -> DRBD resource created -> PVC Bound
+* Inspected DRBD resource placement and confirmed the 3-way quorum (2 diskful + 1 diskless voter)
 
-You can now describe the control-plane vs data-plane architecture and identify where replicas reside.
+You can now explain the TNA storage architecture, how DRBD quorum prevents split-brain, and why `WaitForFirstConsumer` matters for data locality.
 
 xref:module-02.adoc[Next: Module 2 -- Database Locality and Performance ->]
