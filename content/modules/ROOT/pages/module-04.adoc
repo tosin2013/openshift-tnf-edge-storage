@@ -10,56 +10,71 @@
 == Introduction
 
 DRBD uses a *quorum* mechanism to prevent split-brain data corruption.
-In a two-node cluster, a third quorum participant is needed -- either a diskless tiebreaker (TNA/Compact topologies) or a fencing agent (TNF topology).
+On your TNA cluster, three nodes participate in every quorum vote: 2 diskful primary nodes + 1 diskless arbiter.
+If any single node goes down, the remaining 2 still form a majority (2/3) and continue accepting I/O.
 
-In this module you will drain or cordon a node, observe DRBD quorum behavior, and verify that workloads continue running on the surviving node.
+In this module you will cordon and drain a node, observe DRBD quorum behavior, and verify that both storage and workloads survive on the remaining nodes.
 
-[tabs]
-====
-AWS (TNA / Compact)::
-+
-Follow the *Default Path* steps below.
-The arbiter node provides a diskless tiebreaker for DRBD quorum -- no fencing hardware is required.
+NOTE: This module follows the *TNA (Two-Node with Arbiter)* path. If your environment uses a bare-metal TNF topology with Pacemaker/STONITH fencing, see the <<TNF Path>> section at the end.
 
-KVM / Bare Metal (TNF)::
-+
-Follow the *TNF Path* steps at the end of this module.
-Pacemaker triggers STONITH via Redfish to isolate the failed node.
-====
+=== Step 1: Identify the Arbiter Node
 
-== Default Path (AWS TNA / Compact)
-
-=== Step 1: Identify the Diskless Tiebreaker
-
-List all DRBD resources and note the diskless participant:
+List all DRBD resources and identify the diskless arbiter:
 
 [source,bash,role=execute,subs="attributes+"]
 ----
 oc exec -n {linbit_namespace} deploy/linstor-controller -- linstor resource list
 ----
 
-On a TNA cluster, the arbiter node shows `TieBreaker` or `DisklessClient` state.
-This node does not store data but votes in DRBD quorum decisions.
+.Sample output
+[source,text]
+----
+╭────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ResourceName                             │ Node   │ Layers       │ Usage  │ Conns │ State    │ Vote │
+╞════════════════════════════════════════════════════════════════════════════════════════════════╡
+│ pvc-542487aa-2a4e-43ef-a156-e3b8d45e8e2a │ node-1 │ DRBD,STORAGE │ InUse  │ Ok    │ UpToDate │ Yes  │
+│ pvc-542487aa-2a4e-43ef-a156-e3b8d45e8e2a │ node-2 │ DRBD,STORAGE │ Unused │ Ok    │ UpToDate │ Yes  │
+│ pvc-542487aa-2a4e-43ef-a156-e3b8d45e8e2a │ node-3 │ DRBD,STORAGE │ Unused │ Ok    │ Diskless │ Yes  │
+╰────────────────────────────────────────────────────────────────────────────────────────────────╯
+----
+
+The node showing `Diskless` state is the arbiter -- it votes in quorum decisions but stores no data.
+The two `UpToDate` nodes are the diskful primaries.
+All three show `Vote: Yes`, forming the 3-way quorum.
 
 === Step 2: Identify the Node to Cordon
 
-Pick the primary (diskful) node where the database pod is **not** running.
-This ensures the database stays up when we drain the other node:
+We want to cordon the diskful node where the database pod is **not** running.
+This ensures the database stays up and we can observe DRBD's response to losing a replica.
 
-[source,bash,role=execute,subs="attributes+"]
-----
-oc get nodes -l linbit.com/storage-role=primary
-----
-
-Automatically select the primary node that is NOT hosting the database pod:
+First, find where the database pod is running:
 
 [source,bash,role=execute,subs="attributes+"]
 ----
 DB_NODE=$(oc get pod -n {workshop_namespace} -l app=sample-db -o jsonpath='{.items[0].spec.nodeName}')
-export CORDON_NODE=$(oc get nodes -l linbit.com/storage-role=primary -o jsonpath='{.items[*].metadata.name}' | tr ' ' '\n' | grep -v "^${DB_NODE}$" | head -1)
 echo "Database is on: ${DB_NODE}"
-echo "Will cordon:    ${CORDON_NODE}"
 ----
+
+Now identify the other diskful node by checking the LINSTOR storage pool list.
+The node with an `lvm-thin` pool that is *not* hosting the database is our target:
+
+[source,bash,role=execute,subs="attributes+"]
+----
+export CORDON_NODE=$(oc exec -n {linbit_namespace} deploy/linstor-controller -- \
+  linstor storage-pool list -s lvm-thin -m 2>/dev/null | \
+  python3 -c "import sys,json; pools=json.load(sys.stdin); print([p['node_name'] for p in pools[0]['storage_pools'] if p['node_name'] != '${DB_NODE}'][0])")
+echo "Will cordon: ${CORDON_NODE}"
+----
+
+.Expected output
+[source,text]
+----
+Database is on: node-1
+Will cordon: node-2
+----
+
+IMPORTANT: Do *not* cordon the arbiter node (the one with only `DfltDisklessStorPool`).
+We want to test what happens when a diskful replica goes offline.
 
 === Step 3: Cordon the Node
 
@@ -70,70 +85,154 @@ Mark the node as unschedulable:
 oc adm cordon ${CORDON_NODE}
 ----
 
+.Expected output
+[source,text]
+----
+node/node-2 cordoned
+----
+
 === Step 4: Drain Workloads
 
-Drain the node to force workload rescheduling:
+Drain the node to evict all non-DaemonSet pods:
 
 [source,bash,role=execute,subs="attributes+"]
 ----
 oc adm drain ${CORDON_NODE} --ignore-daemonsets --delete-emptydir-data --force --timeout=120s
 ----
 
-NOTE: The `--force` flag is required on TNA clusters because the control-plane guard pods (etcd, kube-apiserver) have no controller owner and would otherwise block the drain.
+NOTE: The `--force` flag is required because some control-plane pods (etcd, kube-apiserver) run as static pods without a controller owner. Without `--force`, the drain would refuse to evict them.
+
+This simulates what happens when a node fails: the DRBD satellite on that node becomes unreachable, and its replica goes stale.
 
 === Step 5: Verify DRBD Quorum
 
-Check that DRBD volumes remain quorate:
+Check that DRBD volumes remain quorate despite the lost node:
 
 [source,bash,role=execute,subs="attributes+"]
 ----
 oc exec -n {linbit_namespace} deploy/linstor-controller -- linstor resource list
 ----
 
-The surviving diskful node + diskless tiebreaker = 2/3 majority.
-Volumes should show `UpToDate` on the surviving node.
+.Sample output (during cordon)
+[source,text]
+----
+╭────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ResourceName                             │ Node   │ Layers       │ Usage  │ Conns   │ State      │ Vote │
+╞════════════════════════════════════════════════════════════════════════════════════════════════════╡
+│ pvc-542487aa-2a4e-43ef-a156-e3b8d45e8e2a │ node-1 │ DRBD,STORAGE │ InUse  │ Ok      │ UpToDate   │ Yes  │
+│ pvc-542487aa-2a4e-43ef-a156-e3b8d45e8e2a │ node-2 │ DRBD,STORAGE │ Unused │ Unknown │ Unknown    │ N/A  │
+│ pvc-542487aa-2a4e-43ef-a156-e3b8d45e8e2a │ node-3 │ DRBD,STORAGE │ Unused │ Ok      │ Diskless   │ Yes  │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────╯
+----
+
+The key observation: **quorum holds** because 2 of 3 voters (node-1 + node-3) are still reachable.
+
+* node-1 (`UpToDate`, `Vote: Yes`) -- the surviving diskful primary, still serving I/O
+* node-2 (`Unknown`) -- the drained node, unreachable
+* node-3 (`Diskless`, `Vote: Yes`) -- the arbiter, still voting
+
+Without the arbiter, losing node-2 would leave only 1/2 voters and DRBD would freeze I/O (`io-error`).
+This is why the arbiter matters in a TNA topology.
 
 === Step 6: Verify Workload Continuity
 
-Confirm the database pod rescheduled to the surviving node:
+Confirm the database pod is still running (it was on the surviving node, not the drained one):
 
 [source,bash,role=execute,subs="attributes+"]
 ----
 oc get pods -n {workshop_namespace} -l app=sample-db -o wide
 ----
 
-Test that the database is still accessible:
+.Expected output
+[source,text]
+----
+NAME          READY   STATUS    RESTARTS   AGE   IP            NODE     NOMINATED NODE   READINESS GATES
+sample-db-0   1/1     Running   0          10m   10.130.0.70   node-1   <none>           <none>
+----
+
+Test that the database is still accessible and data is intact:
 
 [source,bash,role=execute,subs="attributes+"]
 ----
-oc exec -n {workshop_namespace} sample-db-0 -- psql -U demo -d workshop -c "SELECT 1 AS alive;"
+oc exec -n {workshop_namespace} sample-db-0 -- psql -U workshopuser -d workshop -c "SELECT count(*) FROM pgbench_accounts;"
 ----
+
+.Expected output
+[source,text]
+----
+  count
+---------
+ 1000000
+(1 row)
+----
+
+The 1 million rows from the Module 2 pgbench initialization are still there -- no data was lost despite a node going offline.
 
 === Step 7: Uncordon and Resync
 
-Restore the node:
+Restore the node to the cluster:
 
 [source,bash,role=execute,subs="attributes+"]
 ----
 oc adm uncordon ${CORDON_NODE}
 ----
 
-Watch DRBD resynchronize the stale replica:
+.Expected output
+[source,text]
+----
+node/node-2 uncordoned
+----
+
+DRBD will automatically resynchronize the stale replica. Watch the state transition:
 
 [source,bash,role=execute,subs="attributes+"]
 ----
 oc exec -n {linbit_namespace} deploy/linstor-controller -- linstor resource list
 ----
 
-Wait until all resources show `UpToDate` on all nodes.
+.Sample output (resync in progress)
+[source,text]
+----
+╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ResourceName                             │ Node   │ Layers       │ Usage  │ Conns │ State      │ Vote │
+╞══════════════════════════════════════════════════════════════════════════════════════════════════╡
+│ pvc-542487aa-...                         │ node-1 │ DRBD,STORAGE │ InUse  │ Ok    │ UpToDate   │ Yes  │
+│ pvc-542487aa-...                         │ node-2 │ DRBD,STORAGE │ Unused │ Ok    │ Outdated   │ Yes  │
+│ pvc-542487aa-...                         │ node-3 │ DRBD,STORAGE │ Unused │ Ok    │ Diskless   │ Yes  │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+----
+
+Re-run the command until node-2 shows `UpToDate` -- this means DRBD has finished copying the blocks that changed while the node was offline.
+
+.Sample output (resync complete)
+[source,text]
+----
+╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ResourceName                             │ Node   │ Layers       │ Usage  │ Conns │ State    │ Vote │
+╞══════════════════════════════════════════════════════════════════════════════════════════════════╡
+│ pvc-542487aa-...                         │ node-1 │ DRBD,STORAGE │ InUse  │ Ok    │ UpToDate │ Yes  │
+│ pvc-542487aa-...                         │ node-2 │ DRBD,STORAGE │ Unused │ Ok    │ UpToDate │ Yes  │
+│ pvc-542487aa-...                         │ node-3 │ DRBD,STORAGE │ Unused │ Ok    │ Diskless │ Yes  │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+----
+
+All three nodes are back to full quorum -- the cluster has self-healed.
 
 === Step 8: Discussion
 
 Consider these questions:
 
-* Why does the TNA model not require fencing hardware?
-* What happens if the arbiter node fails instead of a primary node?
-* How does this compare to Ceph's minimum 3-node OSD requirement?
+* *Why does the TNA model not require fencing hardware?*
++
+The diskless arbiter acts as a "witness" that can always be reached over the network. With 3 voters, DRBD can determine majority without needing to physically power-off (fence) the failed node. TNF clusters with only 2 storage nodes need STONITH because there is no third voter.
+
+* *What happens if the arbiter node fails instead of a primary node?*
++
+Both diskful nodes remain `UpToDate` and I/O continues -- you still have 2/3 majority. However, if a primary node then *also* fails, the remaining single node would lose quorum (1/3) and stop accepting writes.
+
+* *How does this compare to Ceph's minimum 3-node OSD requirement?*
++
+Ceph requires at least 3 nodes with storage (OSDs) to maintain data availability. DRBD TNA achieves the same quorum resilience with only 2 storage nodes + 1 lightweight arbiter, reducing hardware cost at edge sites.
 
 == TNF Path (KVM / Bare Metal) -- Advanced
 
@@ -184,10 +283,10 @@ oc adm uncordon <your-second-node>
 
 In this module you:
 
-* Identified the quorum mechanism for your cluster topology (diskless tiebreaker or STONITH)
-* Simulated a node failure by cordoning and draining
-* Verified DRBD quorum held and workloads continued on the surviving node
-* Observed DRBD resynchronization when the node returned
-* Discussed the trade-offs between TNA (arbiter quorum) and TNF (fencing) models
+* Identified the arbiter node by its `Diskless` state in `linstor resource list`
+* Simulated a node failure by cordoning and draining a diskful primary node
+* Verified DRBD quorum held (2/3 majority: surviving primary + arbiter) and the database remained accessible with no data loss
+* Observed DRBD automatic resynchronization: the returning node caught up from `Outdated` to `UpToDate`
+* Understood why the TNA arbiter model delivers the same resilience as 3-node Ceph with one fewer storage node
 
 xref:module-05.adoc[Next: Module 5 -- Disaster Recovery ->]
