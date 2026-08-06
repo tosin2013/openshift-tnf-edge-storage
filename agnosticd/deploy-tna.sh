@@ -904,7 +904,7 @@ parameters:
   autoPlace: "2"
   storagePool: lvm-thin
   csi.storage.k8s.io/fstype: xfs
-  property.linstor.csi.linbit.com/DrbdOptions/auto-quorum: majority
+  property.linstor.csi.linbit.com/DrbdOptions/auto-quorum: io-error
   property.linstor.csi.linbit.com/DrbdOptions/Resource/on-no-quorum: io-error
 volumeBindingMode: WaitForFirstConsumer
 reclaimPolicy: Delete
@@ -919,20 +919,21 @@ parameters:
   autoPlace: "2"
   storagePool: lvm-thin
   property.linstor.csi.linbit.com/DrbdOptions/Net/allow-two-primaries: "yes"
-  property.linstor.csi.linbit.com/DrbdOptions/auto-quorum: majority
+  property.linstor.csi.linbit.com/DrbdOptions/auto-quorum: io-error
   property.linstor.csi.linbit.com/DrbdOptions/Resource/on-no-quorum: io-error
 volumeBindingMode: Immediate
 reclaimPolicy: Delete
 allowVolumeExpansion: true
 EOF
 
-  # Enable thin-pool overprovisioning so CSI capacity is reported correctly.
-  # Without this, thin pools show "0 KiB free" and PVC provisioning fails.
-  info "Enabling thin-pool overprovisioning (ratio 20:1) ..."
-  oc exec -n linbit-sds deploy/linstor-controller -- \
-    linstor storage-pool-definition set-property lvm-thin MaxFreeCapacityOversubscriptionRatio 20 2>/dev/null || true
-  oc exec -n linbit-sds deploy/linstor-controller -- \
-    linstor storage-pool-definition set-property lvm-thin MaxTotalCapacityOversubscriptionRatio 20 2>/dev/null || true
+  # Activate thin pools so LINSTOR can read data% and report correct free capacity.
+  # Inactive thin pools report "0 KiB free" which blocks all PVC provisioning.
+  info "Activating thin pools on primary nodes ..."
+  for _sat_pod in $(oc get pods -n linbit-sds -l app.kubernetes.io/component=linstor-satellite \
+    -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null); do
+    oc exec -n linbit-sds "$_sat_pod" -c linstor-satellite -- \
+      lvchange -ay linstor_lvm-thin/lvm-thin 2>/dev/null || true
+  done
 
   # Set encryption passphrase (needed for S3 backup remotes)
   info "Setting LINSTOR encryption passphrase ..."
