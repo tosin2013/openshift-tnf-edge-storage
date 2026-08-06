@@ -42,6 +42,16 @@ Log in to your assigned student cluster from the Showroom terminal:
 oc login {openshift_api_url} -u {openshift_cluster_admin_username} -p '{openshift_cluster_admin_password}'
 ----
 
+.Expected output
+[source,text]
+----
+Login successful.
+
+You have access to 78 projects, the list has been suppressed. You can list all projects with 'oc projects'
+
+Using project "default".
+----
+
 Verify you are connected to the correct cluster:
 
 [source,bash,role=execute,subs="attributes+"]
@@ -49,7 +59,11 @@ Verify you are connected to the correct cluster:
 oc cluster-info | head -1
 ----
 
-You should see your cluster's API URL in the output.
+.Expected output
+[source,text,subs="attributes+"]
+----
+Kubernetes control plane is running at {openshift_api_url}
+----
 Open the OpenShift Console in a new browser tab to follow along:
 
 {openshift_console_url}[Launch Console,window=_blank]
@@ -61,6 +75,28 @@ Confirm the LINSTOR Operator and its components are running:
 [source,bash,role=execute,subs="attributes+"]
 ----
 oc get pods -n {linbit_namespace}
+----
+
+.Sample output
+[source,text]
+----
+NAME                                                  READY   STATUS    RESTARTS   AGE
+ha-controller-hknm6                                   1/1     Running   0          20h
+ha-controller-nppkl                                   1/1     Running   0          20h
+ha-controller-wczb6                                   1/1     Running   0          20h
+linstor-affinity-controller-7c46674bf7-p2cgw          1/1     Running   0          20h
+linstor-controller-6b5894bdb4-c8ml2                   1/1     Running   0          20h
+linstor-csi-controller-7786969d5c-6n8mv               7/7     Running   0          20h
+linstor-csi-nfs-server-dml69                          1/1     Running   0          20h
+linstor-csi-nfs-server-fxlnb                          1/1     Running   0          20h
+linstor-csi-nfs-server-lp5qk                          1/1     Running   0          20h
+linstor-csi-node-b5gpn                                3/3     Running   0          20h
+linstor-csi-node-v682w                                3/3     Running   0          20h
+linstor-csi-node-wz5kd                                3/3     Running   0          20h
+linstor-operator-controller-manager-c7c868959-t2mcf   1/1     Running   0          20h
+linstor-satellite.node-1-4tmhj                        2/2     Running   0          20h
+linstor-satellite.node-2-n5rwf                        2/2     Running   0          20h
+linstor-satellite.node-3-pl7lc                        2/2     Running   0          20h
 ----
 
 You should see pods for:
@@ -83,6 +119,18 @@ Use the LINSTOR CLI to list registered nodes:
 oc exec -n {linbit_namespace} deploy/linstor-controller -- linstor node list
 ----
 
+.Sample output
+[source,text]
+----
+╭───────────────────────────────────────────────────────────────────╮
+│ Node   │ Platform │ NodeType  │ Addresses                │ State  │
+╞═══════════════════════════════════════════════════════════════════╡
+│ node-1 │ LINUX    │ SATELLITE │ 10.130.0.54:3366 (PLAIN) │ Online │
+│ node-2 │ LINUX    │ SATELLITE │ 10.129.0.138:3366(PLAIN) │ Online │
+│ node-3 │ LINUX    │ SATELLITE │ 10.128.0.15:3366 (PLAIN) │ Online │
+╰───────────────────────────────────────────────────────────────────╯
+----
+
 All three nodes register as *SATELLITE* type -- they run the DRBD kernel module and can host diskful or diskless resources.
 The LINSTOR Controller runs as a separate pod (`linstor-controller`) and does not appear in this list.
 
@@ -100,6 +148,20 @@ View the storage pools that back DRBD volumes:
 [source,bash,role=execute,subs="attributes+"]
 ----
 oc exec -n {linbit_namespace} deploy/linstor-controller -- linstor storage-pool list
+----
+
+.Sample output
+[source,text]
+----
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ StoragePool          │ Node   │ Driver   │ PoolName                  │ FreeCapacity │ TotalCapacity │
+╞══════════════════════════════════════════════════════════════════════════════════════════════════════╡
+│ DfltDisklessStorPool │ node-1 │ DISKLESS │                           │              │               │
+│ DfltDisklessStorPool │ node-2 │ DISKLESS │                           │              │               │
+│ DfltDisklessStorPool │ node-3 │ DISKLESS │                           │              │               │
+│ lvm-thin             │ node-1 │ LVM_THIN │ linstor_lvm-thin/lvm-thin │    49.89 GiB │     49.89 GiB │
+│ lvm-thin             │ node-2 │ LVM_THIN │ linstor_lvm-thin/lvm-thin │    49.89 GiB │     49.89 GiB │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────╯
 ----
 
 Every node has a `DfltDisklessStorPool` (DRBD can always create a diskless resource anywhere).
@@ -133,6 +195,14 @@ Review the pre-created StorageClasses:
 oc get sc
 ----
 
+.Sample output
+[source,text]
+----
+NAME                            PROVISIONER              RECLAIMPOLICY   VOLUMEBINDINGMODE      ALLOWVOLUMEEXPANSION   AGE
+linbit-rwo-locality (default)   linstor.csi.linbit.com   Delete          WaitForFirstConsumer   true                   3h
+linbit-rwx-virt                 linstor.csi.linbit.com   Delete          Immediate              true                   3h
+----
+
 You should find at least two LINSTOR-backed classes:
 
 [cols="1,2,1"]
@@ -153,6 +223,20 @@ Inspect the parameters on the locality class:
 [source,bash,role=execute,subs="attributes+"]
 ----
 oc get sc linbit-rwo-locality -o yaml
+----
+
+.Key section from the output
+[source,yaml]
+----
+parameters:
+  autoPlace: "2"
+  csi.storage.k8s.io/fstype: xfs
+  property.linstor.csi.linbit.com/DrbdOptions/Resource/on-no-quorum: io-error
+  property.linstor.csi.linbit.com/DrbdOptions/auto-quorum: io-error
+  storagePool: lvm-thin
+provisioner: linstor.csi.linbit.com
+reclaimPolicy: Delete
+volumeBindingMode: WaitForFirstConsumer
 ----
 
 Look for these key parameters:
@@ -210,6 +294,13 @@ Check the PVC status:
 oc get pvc test-linstor-pvc -n {workshop_namespace}
 ----
 
+.Expected output (Pending is correct at this stage)
+[source,text]
+----
+NAME               STATUS    VOLUME   CAPACITY   ACCESS MODES   STORAGECLASS          AGE
+test-linstor-pvc   Pending                                      linbit-rwo-locality   5s
+----
+
 NOTE: Because `linbit-rwo-locality` uses `volumeBindingMode: WaitForFirstConsumer`, the PVC stays `Pending` until a pod references it.
 This is by design -- LINSTOR delays provisioning to co-locate the primary replica with the consumer pod.
 
@@ -253,6 +344,14 @@ Watch the PVC bind:
 oc get pvc test-linstor-pvc -n {workshop_namespace} -w
 ----
 
+.Expected output (watch until STATUS changes to Bound)
+[source,text]
+----
+NAME               STATUS    VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS          AGE
+test-linstor-pvc   Pending                                                                        linbit-rwo-locality   10s
+test-linstor-pvc   Bound     pvc-1405c6a1-21fc-417a-91f7-3999495777ba   1Gi        RWO            linbit-rwo-locality   15s
+----
+
 Press `Ctrl+C` once the PVC shows `Bound`.
 
 == Step 6: Inspect the DRBD Resource
@@ -262,6 +361,18 @@ View the DRBD resource that LINSTOR created for the PVC:
 [source,bash,role=execute,subs="attributes+"]
 ----
 oc exec -n {linbit_namespace} deploy/linstor-controller -- linstor resource list
+----
+
+.Sample output
+[source,text]
+----
+╭────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ResourceName                             │ Node   │ Layers       │ Usage  │ Conns │ State    │ Vote │
+╞════════════════════════════════════════════════════════════════════════════════════════════════╡
+│ pvc-1405c6a1-21fc-417a-91f7-3999495777ba │ node-1 │ DRBD,STORAGE │ InUse  │ Ok    │ UpToDate │ Yes  │
+│ pvc-1405c6a1-21fc-417a-91f7-3999495777ba │ node-2 │ DRBD,STORAGE │ Unused │ Ok    │ UpToDate │ Yes  │
+│ pvc-1405c6a1-21fc-417a-91f7-3999495777ba │ node-3 │ DRBD,STORAGE │ Unused │ Ok    │ Diskless │ Yes  │
+╰────────────────────────────────────────────────────────────────────────────────────────────────╯
 ----
 
 Look at the columns:
@@ -304,6 +415,15 @@ Verify the LINSTOR resource was cleaned up:
 [source,bash,role=execute,subs="attributes+"]
 ----
 oc exec -n {linbit_namespace} deploy/linstor-controller -- linstor resource list
+----
+
+.Expected output (empty table confirms cleanup)
+[source,text]
+----
+╭─────────────────────────────────────────────────────────────╮
+│ ResourceName │ Node │ Layers │ Usage │ Conns │ State │ Vote │
+╞═════════════════════════════════════════════════════════════╡
+╰─────────────────────────────────────────────────────────────╯
 ----
 
 == Summary
