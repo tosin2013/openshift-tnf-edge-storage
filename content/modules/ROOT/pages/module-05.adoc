@@ -221,10 +221,12 @@ LINSTOR resource: pvc-542487aa-2a4e-43ef-a156-e3b8d45e8e2a
 ----
 ====
 
-Take a crash-consistent snapshot:
+Take a crash-consistent snapshot (the delete command ensures idempotency if you re-run this module):
 
 [source,bash,role=execute,subs="attributes+"]
 ----
+oc exec -n {linbit_namespace} deploy/linstor-controller -- \
+  linstor snapshot delete ${LINSTOR_RESOURCE} snap-baseline 2>/dev/null || true
 oc exec -n {linbit_namespace} deploy/linstor-controller -- \
   linstor snapshot create ${LINSTOR_RESOURCE} snap-baseline
 ----
