@@ -13,150 +13,365 @@ Traditional CSI drivers bind a PVC as soon as it is created, which can place the
 LINSTOR's `WaitForFirstConsumer` binding mode delays provisioning until the pod is scheduled, ensuring the primary DRBD replica lives on the *same node* as the consumer.
 Reads go directly to local block storage -- no network hop.
 
-In this module you will benchmark a pre-deployed PostgreSQL instance to measure local-read performance, then compare it against a 3-way replication topology.
+In this module you will deploy a PostgreSQL database, verify data locality, and use pgbench to measure the performance difference between local reads and synchronously replicated writes.
 
-== Step 1: Examine the PostgreSQL Deployment
+== Step 1: Deploy and Examine the PostgreSQL Database
 
-Inspect the pre-deployed database StatefulSet:
-
-[source,bash,role=execute,subs="attributes+"]
-----
-oc get statefulset -n {workshop_namespace}
-----
+Deploy a PostgreSQL StatefulSet that uses the `linbit-rwo-locality` StorageClass:
 
 [source,bash,role=execute,subs="attributes+"]
 ----
-oc get pods -n {workshop_namespace} -l app=sample-db -o wide
+cat <<'EOF' | oc apply -f -
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: sample-db
+  namespace: {workshop_namespace}
+  labels:
+    app: sample-db
+spec:
+  serviceName: sample-db
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sample-db
+  template:
+    metadata:
+      labels:
+        app: sample-db
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: postgres
+          image: registry.redhat.io/rhel9/postgresql-16:latest
+          env:
+            - name: POSTGRESQL_USER
+              value: workshopuser
+            - name: POSTGRESQL_PASSWORD
+              value: workshop123
+            - name: POSTGRESQL_DATABASE
+              value: workshop
+            - name: POSTGRESQL_ADMIN_PASSWORD
+              value: admin123
+          ports:
+            - containerPort: 5432
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/pgsql/data
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          app: sample-db
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: linbit-rwo-locality
+        resources:
+          requests:
+            storage: 5Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sample-db
+  namespace: {workshop_namespace}
+  labels:
+    app: sample-db
+spec:
+  ports:
+    - port: 5432
+      targetPort: 5432
+  clusterIP: None
+  selector:
+    app: sample-db
+EOF
 ----
 
-Note the node where the database pod is running.
+Wait for the pod to be ready:
+
+[source,bash,role=execute,subs="attributes+"]
+----
+oc get pods -n {workshop_namespace} -l app=sample-db -o wide -w
+----
+
+.Expected output
+[source,text]
+----
+NAME          READY   STATUS    RESTARTS   AGE   IP            NODE     NOMINATED NODE   READINESS GATES
+sample-db-0   1/1     Running   0          15s   10.130.0.70   node-1   <none>           <none>
+----
+
+Press `Ctrl+C` once the pod shows `1/1 Running`.
+Note the *NODE* column -- the database pod's node is important for verifying data locality in the next step.
 
 == Step 2: Verify Data Locality
 
-Confirm the PVC is bound to the same node as the pod:
+Confirm the PVC is bound:
 
 [source,bash,role=execute,subs="attributes+"]
 ----
 oc get pvc -n {workshop_namespace} -l app=sample-db
 ----
 
-Now check the LINSTOR resource to confirm the primary (diskful, InUse) replica is on the same node:
+.Expected output
+[source,text]
+----
+NAME               STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS          AGE
+data-sample-db-0   Bound    pvc-542487aa-2a4e-43ef-a156-e3b8d45e8e2a   5Gi        RWO            linbit-rwo-locality   30s
+----
+
+Now check the LINSTOR resource to confirm the primary (diskful, InUse) replica is on the same node as the pod:
 
 [source,bash,role=execute,subs="attributes+"]
 ----
 oc exec -n {linbit_namespace} deploy/linstor-controller -- linstor resource list
 ----
 
-The pod's node and the `InUse` diskful replica should match.
-This is the `WaitForFirstConsumer` mechanism in action.
+.Sample output
+[source,text]
+----
+╭────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ResourceName                             │ Node   │ Layers       │ Usage  │ Conns │ State    │ Vote │
+╞════════════════════════════════════════════════════════════════════════════════════════════════╡
+│ pvc-542487aa-2a4e-43ef-a156-e3b8d45e8e2a │ node-1 │ DRBD,STORAGE │ InUse  │ Ok    │ UpToDate │ Yes  │
+│ pvc-542487aa-2a4e-43ef-a156-e3b8d45e8e2a │ node-2 │ DRBD,STORAGE │ Unused │ Ok    │ UpToDate │ Yes  │
+│ pvc-542487aa-2a4e-43ef-a156-e3b8d45e8e2a │ node-3 │ DRBD,STORAGE │ Unused │ Ok    │ Diskless │ Yes  │
+╰────────────────────────────────────────────────────────────────────────────────────────────────╯
+----
+
+Compare the pod's *NODE* column from Step 1 with the *InUse* row above -- they should match.
+This is the `WaitForFirstConsumer` mechanism in action: LINSTOR delayed provisioning until the pod was scheduled, then placed the primary DRBD replica on the same node.
+Reads from PostgreSQL go directly to local block storage with zero network hops.
 
 == Step 3: Run a Baseline Benchmark
 
-Initialize pgbench inside the database pod:
+Initialize pgbench with a scale factor of 10 (creates ~1 million rows):
 
 [source,bash,role=execute,subs="attributes+"]
 ----
 oc exec -n {workshop_namespace} sample-db-0 -- pgbench -i -s 10 workshop
 ----
 
-Run a read-heavy benchmark (select-only mode):
+.Expected output (last line)
+[source,text]
+----
+done in 1.41 s (drop tables 0.00 s, create tables 0.01 s, client-side generate 0.96 s, vacuum 0.09 s, primary keys 0.36 s).
+----
+
+Run a read-heavy benchmark (select-only mode, 4 clients, 30 seconds):
 
 [source,bash,role=execute,subs="attributes+"]
 ----
 oc exec -n {workshop_namespace} sample-db-0 -- pgbench -S -c 4 -j 2 -T 30 workshop
 ----
 
-Record the *TPS (transactions per second)* and *average latency* values.
+.Sample output
+[source,text]
+----
+pgbench (16.14)
+starting vacuum...end.
+transaction type: <builtin: select only>
+scaling factor: 10
+query mode: simple
+number of clients: 4
+number of threads: 2
+maximum number of tries: 1
+duration: 30 s
+number of transactions actually processed: 954451
+number of failed transactions: 0 (0.000%)
+latency average = 0.126 ms
+initial connection time = 4.439 ms
+tps = 31750.114932 (without initial connection time)
+----
+
+Record your *TPS* and *latency average* values -- you will compare them against the mixed workload next.
 
 == Step 4: Run a Mixed Read/Write Benchmark
 
-Run the default pgbench workload (mixed reads and writes):
+Run the default pgbench workload (TPC-B: mixed reads and writes):
 
 [source,bash,role=execute,subs="attributes+"]
 ----
 oc exec -n {workshop_namespace} sample-db-0 -- pgbench -c 4 -j 2 -T 30 workshop
 ----
 
-Compare to the read-only results:
+.Sample output
+[source,text]
+----
+pgbench (16.14)
+starting vacuum...end.
+transaction type: <builtin: TPC-B (sort of)>
+scaling factor: 10
+query mode: simple
+number of clients: 4
+number of threads: 2
+maximum number of tries: 1
+duration: 30 s
+number of transactions actually processed: 44317
+number of failed transactions: 0 (0.000%)
+latency average = 2.708 ms
+initial connection time = 4.378 ms
+tps = 1477.367478 (without initial connection time)
+----
 
-* *Reads* are served from local disk -- expect low latency
-* *Writes* must replicate to the remote peer over the network -- expect higher latency
+Compare your results:
 
-This difference demonstrates DRBD's synchronous replication cost and why `WaitForFirstConsumer` matters for read-heavy workloads.
+[cols="1,1,1,2"]
+|===
+| Workload | TPS | Avg Latency | Why
 
-== Step 5: Observe Replication Impact
+| Select-only (Step 3)
+| ~31,750
+| ~0.13 ms
+| Reads served from local DRBD primary -- no network hop
 
-[tabs]
-====
-AWS (TNA / Compact)::
-+
-On a TNA cluster you have exactly 2 diskful nodes.
-The `autoPlace: "2"` setting already replicates to both -- there is no third diskful node available for a 3-way comparison.
-Instead, observe the write latency difference by running a write-heavy workload with synchronous (`protocol C`) vs asynchronous (`protocol A`) replication:
-+
+| Mixed TPC-B (Step 4)
+| ~1,477
+| ~2.71 ms
+| Each write must replicate to the remote peer and wait for acknowledgment before returning
+|===
+
+The ~21x TPS difference and ~21x latency increase demonstrate DRBD's *synchronous replication cost*.
+Reads are essentially bare-metal speed because `WaitForFirstConsumer` placed the primary replica on the same node as PostgreSQL.
+Writes pay the network round-trip penalty because DRBD protocol C requires the remote peer to confirm every write before the application sees success.
+
+== Step 5: Understand DRBD Replication Protocol
+
+Examine the DRBD resource-definition properties for the database PVC:
+
 [source,bash,role=execute,subs="attributes+"]
 ----
-oc exec -n {linbit_namespace} deploy/linstor-controller -- \
-  linstor resource-definition list-properties pvc-$(oc get pvc -n {workshop_namespace} data-sample-db-0 -o jsonpath='{.spec.volumeName}' | sed 's/pvc-//')
+PV_NAME=$(oc get pvc data-sample-db-0 -n {workshop_namespace} -o jsonpath='{.spec.volumeName}')
+oc exec -n {linbit_namespace} deploy/linstor-controller -- linstor resource-definition list-properties "$PV_NAME"
 ----
-+
-The default is `protocol C` (synchronous) -- every write must be acknowledged by the remote peer before returning to the application.
-This is why write TPS is lower than read TPS.
 
-KVM / Bare Metal (3+ nodes)::
-+
-If you have 3 or more storage nodes, create a 3-way StorageClass:
-+
-[source,bash,role=execute,subs="attributes+"]
+.Sample output
+[source,text]
 ----
-cat <<'EOF' | oc apply -f -
-apiVersion: storage.k8s.io/v1
-kind: StorageClass
-metadata:
-  name: linbit-rwo-3way
-provisioner: linstor.csi.linbit.com
-parameters:
-  autoPlace: "3"
-  storagePool: lvm-thin
-  csi.storage.k8s.io/fstype: xfs
-volumeBindingMode: WaitForFirstConsumer
-reclaimPolicy: Delete
-allowVolumeExpansion: true
-EOF
+╭───────────────────────────────────────────────────────────╮
+│ Key                                  │ Value              │
+╞═══════════════════════════════════════════════════════════╡
+│ Aux/csi-provisioning-completed-by    │ linstor-csi/1.12.0 │
+│ Aux/csi.storage.k8s.io/pvc/name      │ data-sample-db-0   │
+│ Aux/csi.storage.k8s.io/pvc/namespace │ linbit-workshop    │
+│ DrbdOptions/Resource/quorum          │ majority           │
+│ DrbdOptions/auto-verify-alg          │ sha256             │
+╰───────────────────────────────────────────────────────────╯
 ----
-+
-Deploy a second database using this class and benchmark it.
-With 3-way replication, writes must wait for two remote acknowledgments instead of one.
-====
+
+Notice that *protocol C* does not appear in the properties -- it is the DRBD default and doesn't need to be explicitly set.
+DRBD has three replication protocols:
+
+[cols="1,1,2"]
+|===
+| Protocol | Type | When write returns
+
+| *A*
+| Asynchronous
+| As soon as the local write completes (remote may lag)
+
+| *B*
+| Semi-synchronous
+| After the remote node receives the data in memory (not yet on disk)
+
+| *C* (default)
+| Synchronous
+| After the remote node confirms the write is on disk
+|===
+
+Protocol C is the safest -- a crash on either node cannot lose acknowledged data.
+The tradeoff is the write latency you observed in Step 4: every PostgreSQL commit must wait for a network round-trip to the peer node.
+
+Also note `quorum: majority` -- on your 3-node TNA cluster, any 2 of 3 nodes must agree for writes to proceed.
+This prevents split-brain at the cost of requiring at least 2 nodes to be reachable.
 
 == Step 6: Verify Replication Topology
 
-Examine the DRBD resource backing the database to see how replication is structured:
+Examine the DRBD resource backing the database with volume-level detail:
 
 [source,bash,role=execute,subs="attributes+"]
 ----
-oc exec -n {linbit_namespace} deploy/linstor-controller -- linstor resource list
+oc exec -n {linbit_namespace} deploy/linstor-controller -- linstor resource list-volumes
 ----
 
-On TNA clusters you will see:
+.Sample output
+[source,text]
+----
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Resource                                 │ Node   │ StoragePool          │ VolNr │ DeviceName    │ Allocated  │ InUse  │ State    │ Repl           │
+╞══════════════════════════════════════════════════════════════════════════════════════════════════════════════════╡
+│ pvc-542487aa-...                         │ node-1 │ lvm-thin             │     0 │ /dev/drbd1000 │ 341.77 MiB │ InUse  │ UpToDate │ Established(2) │
+│ pvc-542487aa-...                         │ node-2 │ lvm-thin             │     0 │ /dev/drbd1000 │ 334.08 MiB │ Unused │ UpToDate │ Established(2) │
+│ pvc-542487aa-...                         │ node-3 │ DfltDisklessStorPool │     0 │ /dev/drbd1000 │            │ Unused │ Diskless │ Established(2) │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+----
 
-* 2 diskful replicas (`UpToDate`) on the CP/worker nodes
-* 1 diskless `TieBreaker` on the arbiter node
+This view shows additional detail compared to `resource list`:
 
-The TieBreaker participates in quorum but does not add replication latency to writes.
+[cols="1,2"]
+|===
+| Column | Meaning
+
+| *StoragePool*
+| `lvm-thin` = diskful replica on real storage. `DfltDisklessStorPool` = diskless quorum voter.
+
+| *Allocated*
+| Actual space consumed on the thin pool. Compare this against the 5 GiB PVC request -- thin provisioning means only written data takes space.
+
+| *Repl*
+| `Established(2)` = this node has active replication connections to 2 other nodes.
+|===
+
+On your TNA cluster you see:
+
+* 2 diskful replicas (`UpToDate`) on the primary nodes -- writes replicate synchronously between them
+* 1 diskless voter (`Diskless`) on the arbiter -- participates in quorum votes but does not add replication latency
 
 == Step 7: Clean Up
 
-No additional resources to clean up in this step (the sample-db StatefulSet persists for later modules).
+No resources to clean up -- the `sample-db` StatefulSet and its PVC persist for later modules.
+
+Verify it is still running:
+
+[source,bash,role=execute,subs="attributes+"]
+----
+oc get statefulset,pvc -n {workshop_namespace}
+----
+
+.Expected output
+[source,text]
+----
+NAME                         READY   AGE
+statefulset.apps/sample-db   1/1     5m
+
+NAME                                   STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS          AGE
+persistentvolumeclaim/data-sample-db-0 Bound    pvc-542487aa-2a4e-43ef-a156-e3b8d45e8e2a   5Gi        RWO            linbit-rwo-locality   5m
+----
 
 == Summary
 
 In this module you:
 
-* Verified that `WaitForFirstConsumer` co-locates the pod and primary DRBD replica
-* Measured local-read performance with pgbench (select-only) -- near-bare-metal latency
-* Observed synchronous replication cost on writes
-* Examined the TNA replication topology (2 diskful + 1 TieBreaker)
-* Understood why topology-aware scheduling is critical for database workloads at the edge
+* Deployed a PostgreSQL database on `linbit-rwo-locality` and confirmed `WaitForFirstConsumer` co-located the pod and primary DRBD replica on the same node
+* Measured local-read performance (~31,750 TPS at 0.13 ms latency) -- near-bare-metal speed with zero network hops
+* Measured mixed read/write performance (~1,477 TPS at 2.71 ms latency) and identified synchronous replication as the write bottleneck
+* Learned that DRBD protocol C (the default) requires remote acknowledgment on every write -- the safest option but with a latency tradeoff
+* Examined the TNA replication topology: 2 diskful replicas for data safety + 1 diskless voter for quorum, with the arbiter adding zero write latency
+
+You can now explain why `WaitForFirstConsumer` is critical for database performance at the edge and articulate the read/write latency tradeoff of synchronous replication.
 
 xref:module-03.adoc[Next: Module 3 -- VM Live Migration ->]
