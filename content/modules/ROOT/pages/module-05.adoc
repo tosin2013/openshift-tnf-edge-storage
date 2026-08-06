@@ -10,18 +10,60 @@
 == Introduction
 
 LINSTOR provides crash-consistent snapshots that can be shipped to an S3-compatible object store.
-Subsequent snapshots ship only the *changed blocks* (incremental deltas), making remote backup bandwidth-efficient -- a critical property for edge sites with limited uplinks.
+Subsequent snapshots ship only the *changed blocks* (incremental deltas), making remote backup bandwidth-efficient -- a critical property for edge sites with limited or metered uplinks.
 
-In this module you will configure an S3 remote, take snapshots of the database PVC, and verify incremental delta shipping.
+In this module you will:
 
-== Step 1: Configure the S3 Remote
+* Deploy a MinIO instance as an S3-compatible endpoint
+* Set up LINSTOR encryption and configure an S3 backup remote
+* Take a full baseline snapshot and ship it to S3
+* Generate new data, ship an incremental backup, and compare the dramatic size difference
+* Discuss RPO, restoration, and encryption considerations for edge DR
 
-[tabs]
+== Step 1: Set Up Encryption
+
+LINSTOR encrypts S3 remote credentials at rest, so a master encryption passphrase must be configured *before* creating any S3 remote.
+
+Create the passphrase (if this is the first time) or enter it (if it already exists):
+
+[source,bash,role=execute,subs="attributes+"]
+----
+oc exec -n {linbit_namespace} deploy/linstor-controller -- \
+  linstor encryption create-passphrase --passphrase workshop-lab-2024 2>&1 \
+  || oc exec -n {linbit_namespace} deploy/linstor-controller -- \
+  linstor encryption enter-passphrase --passphrase workshop-lab-2024
+----
+
+.Sample output (first time)
+[%collapsible]
 ====
-MinIO (Default)::
-+
+[source,text]
+----
+SUCCESS:
+    Crypt passphrase created
+----
+====
+
+.Sample output (passphrase already exists)
+[%collapsible]
+====
+[source,text]
+----
+ERROR:
+Description:
+    Could not create new crypt passphrase as it already exists
+...
+SUCCESS:
+    Passphrase accepted
+----
+====
+
+NOTE: In production, use Vault or an external KMS instead of a static passphrase.
+
+== Step 2: Deploy MinIO and Configure the S3 Remote
+
 Deploy a MinIO instance as an S3-compatible endpoint for the lab:
-+
+
 [source,bash,role=execute,subs="attributes+"]
 ----
 cat <<'MEOF' | oc apply -f -
@@ -42,10 +84,18 @@ spec:
       labels:
         app: minio
     spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: minio
           image: quay.io/minio/minio:latest
           args: ["server", "/data"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           env:
             - name: MINIO_ROOT_USER
               value: minioadmin
@@ -67,18 +117,39 @@ spec:
       targetPort: 9000
 MEOF
 ----
-+
+
+.Sample output
+[%collapsible]
+====
+[source,text]
+----
+deployment.apps/minio created
+service/minio created
+----
+====
+
 Wait for MinIO to be ready, then create the backup bucket:
-+
+
 [source,bash,role=execute,subs="attributes+"]
 ----
 oc wait --for=condition=available deploy/minio -n {workshop_namespace} --timeout=120s
 oc exec -n {workshop_namespace} deploy/minio -- mc alias set local http://localhost:9000 minioadmin minioadmin 2>/dev/null || true
 oc exec -n {workshop_namespace} deploy/minio -- mc mb local/workshop-backups 2>/dev/null || true
 ----
-+
-Create the LINSTOR remote pointing to MinIO:
-+
+
+.Sample output
+[%collapsible]
+====
+[source,text]
+----
+deployment.apps/minio condition met
+Added `local` successfully.
+Bucket created successfully `local/workshop-backups`.
+----
+====
+
+Now create the LINSTOR remote pointing to MinIO:
+
 [source,bash,role=execute,subs="attributes+"]
 ----
 oc exec -n {linbit_namespace} deploy/linstor-controller -- \
@@ -91,20 +162,19 @@ oc exec -n {linbit_namespace} deploy/linstor-controller -- \
   minioadmin
 ----
 
-AWS S3::
-+
-If you have an AWS S3 bucket, create the LINSTOR remote pointing to it:
-+
-[source,bash,role=execute,subs="attributes+"]
+.Sample output
+[%collapsible]
+====
+[source,text]
 ----
-oc exec -n {linbit_namespace} deploy/linstor-controller -- \
-  linstor remote create s3 \
-  workshop-dr-target \
-  https://s3.amazonaws.com \
-  <your-bucket-name> \
-  <your-region> \
-  <your-access-key> \
-  <your-secret-key>
+SUCCESS:
+    Remote created
+SUCCESS:
+    (ip-10-0-1-11) Node changes applied.
+SUCCESS:
+    (ip-10-0-1-12) Node changes applied.
+SUCCESS:
+    (ip-10-0-1-10) Node changes applied.
 ----
 ====
 
@@ -115,48 +185,43 @@ Verify the remote was created:
 oc exec -n {linbit_namespace} deploy/linstor-controller -- linstor remote list
 ----
 
-== Step 2: Create an Encryption Passphrase
+.Sample output
+[%collapsible]
+====
+[source,text]
+----
+╭───────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Name                              │ Type    │ Info                                                        │
+╞═══════════════════════════════════════════════════════════════════════════════════════════════════════════╡
+│ workshop-dr-target                │ S3      │ us-east-1.http://minio.linbit-workshop.svc:9000/workshop-backups │
+│ local-remote-generated-by-linstor │ Linstor │ http://localhost:3370                                       │
+╰───────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+----
+====
 
-LINSTOR requires a master encryption passphrase before S3 remotes can be created (credentials are encrypted at rest):
+TIP: For production or AWS S3, replace the MinIO endpoint with `https://s3.amazonaws.com`, your bucket name, region, and AWS credentials. Remove `--use-path-style` for real AWS S3 endpoints.
+
+== Step 3: Identify the LINSTOR Resource and Take a Snapshot
+
+In LINSTOR, the PersistentVolume name *is* the resource name. Extract it from the database PVC:
 
 [source,bash,role=execute,subs="attributes+"]
 ----
-oc exec -n {linbit_namespace} deploy/linstor-controller -- \
-  linstor encryption create-passphrase --passphrase workshop-lab-2024
+export LINSTOR_RESOURCE=$(oc get pvc data-sample-db-0 -n {workshop_namespace} \
+  -o jsonpath='{.spec.volumeName}')
+echo "LINSTOR resource: ${LINSTOR_RESOURCE}"
 ----
 
-NOTE: In production, use Vault or an external KMS for passphrase management.
-
-== Step 3: Take the First Snapshot
-
-Identify and capture the LINSTOR resource name backing the database PVC:
-
-[source,bash,role=execute,subs="attributes+"]
+.Sample output
+[%collapsible]
+====
+[source,text]
 ----
-export LINSTOR_RESOURCE=$(oc exec -n {linbit_namespace} deploy/linstor-controller -- \
-  linstor resource list --output-format json | python3 -c "
-import sys, json
-for r in json.load(sys.stdin).get('resource_states', json.load(open('/dev/stdin')) if False else []):
-    pass
-" 2>/dev/null || \
-  oc get pv $(oc get pvc -n {workshop_namespace} -l app=sample-db -o jsonpath='{.items[0].spec.volumeName}') \
-    -o jsonpath='{.spec.csi.volumeAttributes.linstor\.csi\.linbit\.com/resource-group}' 2>/dev/null || echo "")
+LINSTOR resource: pvc-542487aa-2a4e-43ef-a156-e3b8d45e8e2a
 ----
+====
 
-If the above does not capture automatically, list resources and set manually:
-
-[source,bash,role=execute,subs="attributes+"]
-----
-oc exec -n {linbit_namespace} deploy/linstor-controller -- linstor resource list
-----
-
-[source,bash,role=execute,subs="attributes+"]
-----
-# Set the resource name from the output above
-export LINSTOR_RESOURCE=<resource-name-from-output>
-----
-
-Take a snapshot:
+Take a crash-consistent snapshot:
 
 [source,bash,role=execute,subs="attributes+"]
 ----
@@ -164,9 +229,31 @@ oc exec -n {linbit_namespace} deploy/linstor-controller -- \
   linstor snapshot create ${LINSTOR_RESOURCE} snap-baseline
 ----
 
-== Step 4: Ship the Snapshot to S3
+.Sample output
+[%collapsible]
+====
+[source,text]
+----
+SUCCESS:
+Description:
+    New snapshot 'snap-baseline' of resource 'pvc-542487aa-...' registered.
+    ...
+SUCCESS:
+    Took snapshot of '[pvc-542487aa-...]' on 'ip-10-0-1-10'
+SUCCESS:
+    Took snapshot of '[pvc-542487aa-...]' on 'ip-10-0-1-11'
+    ...
+SUCCESS:
+    Resumed IO of '[pvc-542487aa-...]' on 'ip-10-0-1-10' after snapshot
+----
 
-Ship the baseline snapshot to the remote target:
+Notice that LINSTOR briefly suspends I/O, takes the snapshot on each replica node, then resumes -- the entire operation typically completes in under a second.
+====
+
+== Step 4: Ship the Baseline Backup to S3
+
+Ship the snapshot to the remote target.
+The `linstor backup create` command automatically takes a new snapshot and uploads it:
 
 [source,bash,role=execute,subs="attributes+"]
 ----
@@ -174,15 +261,42 @@ oc exec -n {linbit_namespace} deploy/linstor-controller -- \
   linstor backup create workshop-dr-target ${LINSTOR_RESOURCE}
 ----
 
-Verify the backup was created:
+.Sample output
+[%collapsible]
+====
+[source,text]
+----
+    ...
+INFO:
+    Shipping of resource pvc-542487aa-... to remote workshop-dr-target in progress.
+SUCCESS:
+    Started shipping of resource 'pvc-542487aa-...'
+----
+====
+
+Wait a few seconds for the upload to finish, then verify:
 
 [source,bash,role=execute,subs="attributes+"]
 ----
+sleep 10
 oc exec -n {linbit_namespace} deploy/linstor-controller -- \
   linstor backup list workshop-dr-target
 ----
 
-Note the backup ID and size -- this is a *full* backup.
+.Sample output
+[%collapsible]
+====
+[source,text]
+----
+╭─────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Resource                                 │ Snapshot             │ Finished at         │ Based On │ Status  │
+╞═════════════════════════════════════════════════════════════════════════════════════════════╡
+│ pvc-542487aa-2a4e-43ef-a156-e3b8d45e8e2a │ back_20260806_212328 │ 2026-08-06 21:23:36 │          │ Success │
+╰─────────────────────────────────────────────────────────────────────────────────────────────╯
+----
+
+The **Based On** column is empty -- this is a *full* (baseline) backup.
+====
 
 == Step 5: Generate New Data
 
@@ -191,23 +305,45 @@ Write additional data to the database to create a delta:
 [source,bash,role=execute,subs="attributes+"]
 ----
 oc exec -n {workshop_namespace} sample-db-0 -- \
-  psql -U demo -d workshop -c "
+  psql -U workshopuser -d workshop -c "
     CREATE TABLE IF NOT EXISTS dr_test (id serial PRIMARY KEY, payload text, created_at timestamp DEFAULT now());
     INSERT INTO dr_test (payload) SELECT md5(random()::text) FROM generate_series(1, 10000);
   "
 ----
+
+.Sample output
+[%collapsible]
+====
+[source,text]
+----
+CREATE TABLE
+INSERT 0 10000
+----
+====
 
 Verify the data was inserted:
 
 [source,bash,role=execute,subs="attributes+"]
 ----
 oc exec -n {workshop_namespace} sample-db-0 -- \
-  psql -U demo -d workshop -c "SELECT count(*) FROM dr_test;"
+  psql -U workshopuser -d workshop -c "SELECT count(*) FROM dr_test;"
 ----
 
-== Step 6: Take an Incremental Snapshot
+.Sample output
+[%collapsible]
+====
+[source,text]
+----
+ count
+-------
+ 10000
+(1 row)
+----
+====
 
-Take a second snapshot and ship it:
+== Step 6: Ship an Incremental Backup and Compare
+
+Take a second backup and ship it. LINSTOR automatically detects the previous backup and ships only the changed blocks:
 
 [source,bash,role=execute,subs="attributes+"]
 ----
@@ -215,62 +351,170 @@ oc exec -n {linbit_namespace} deploy/linstor-controller -- \
   linstor backup create workshop-dr-target ${LINSTOR_RESOURCE}
 ----
 
-List backups again:
+Wait for it to complete, then list both backups:
 
 [source,bash,role=execute,subs="attributes+"]
 ----
+sleep 15
 oc exec -n {linbit_namespace} deploy/linstor-controller -- \
   linstor backup list workshop-dr-target
 ----
 
-Compare the sizes:
+.Sample output
+[%collapsible]
+====
+[source,text]
+----
+╭───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Resource                                 │ Snapshot             │ Finished at         │ Based On                      │ Status  │
+╞═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╡
+│ pvc-542487aa-2a4e-43ef-a156-e3b8d45e8e2a │ back_20260806_212328 │ 2026-08-06 21:23:36 │                               │ Success │
+│ pvc-542487aa-2a4e-43ef-a156-e3b8d45e8e2a │ back_20260806_212410 │ 2026-08-06 21:24:11 │ pvc-..._back_20260806_212328  │ Success │
+╰───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+----
 
-* The *first* backup is a full copy of the volume
-* The *second* backup ships only the *blocks that changed* since the first snapshot
+Notice the **Based On** column for the second backup -- it references the first, confirming this is an incremental backup.
+====
 
-This incremental approach dramatically reduces bandwidth requirements for remote DR from edge sites.
+Now compare the actual object sizes in MinIO to see the dramatic difference:
+
+[source,bash,role=execute,subs="attributes+"]
+----
+oc exec -n {workshop_namespace} deploy/minio -- \
+  mc ls --recursive --summarize local/workshop-backups
+----
+
+.Sample output
+[%collapsible]
+====
+[source,text]
+----
+[2026-08-06 21:23:36 UTC]  38MiB STANDARD pvc-542487aa-..._00000_back_20260806_212328
+[2026-08-06 21:24:11 UTC] 684KiB STANDARD pvc-542487aa-..._00000_back_20260806_212410
+[2026-08-06 21:23:36 UTC] 3.1KiB STANDARD pvc-542487aa-..._back_20260806_212328.meta
+[2026-08-06 21:24:11 UTC] 3.4KiB STANDARD pvc-542487aa-..._back_20260806_212410.meta
+
+Total Size: 38 MiB
+Total Objects: 4
+----
+====
+
+[IMPORTANT]
+.Incremental Delta in Action
+====
+|===
+| Backup | Type | Size
+
+| `back_..._212328` | Full (baseline) | **38 MiB**
+| `back_..._212410` | Incremental (after 10k rows) | **684 KiB**
+|===
+
+The incremental backup is *98% smaller* than the full backup -- only the changed blocks from inserting 10,000 rows were shipped. For edge sites with limited bandwidth (satellite, metered cellular), this delta-only model makes frequent DR backups practical.
+====
 
 == Step 7: Discussion
 
 Consider these disaster recovery scenarios:
 
 * *Site loss:* How would you restore from S3 into a new cluster?
-** Use `linstor backup restore` on the recovery cluster, pointing to the same S3 remote
-** Schedule the pod on the restored volume -- data as of the last incremental snapshot
+** Deploy LINSTOR on the recovery cluster and configure the same S3 remote
+** Run `linstor backup restore workshop-dr-target <resource-name>` to download the latest snapshot chain
+** Schedule the pod on the restored volume -- data is as of the last shipped backup
 
 * *RPO (Recovery Point Objective):* How often should you ship snapshots?
-** Block-level deltas are small -- hourly or even more frequent shipping is practical at the edge
+** Block-level deltas are small (our test showed 684 KiB for 10k rows of changes)
+** Hourly or even more frequent shipping is practical at the edge
+** LINSTOR snapshots are crash-consistent so there is no need to quiesce the application
+
+* *Backup chain management:* What happens as the chain grows?
+** Each incremental backup depends on its parent. Periodically taking a fresh full backup (by deleting old snapshots first) prevents long restore chains.
+** Use `linstor backup delete` to prune old backups from S3
 
 * *Encryption:* Why encrypt backup data in S3?
 ** S3 buckets may be in a different security zone; encryption-at-rest prevents data exposure
+** LINSTOR encrypts remote credentials at rest (the passphrase you configured in Step 1)
 
 == Clean Up
 
-Remove the test table:
+Remove the test data:
 
 [source,bash,role=execute,subs="attributes+"]
 ----
 oc exec -n {workshop_namespace} sample-db-0 -- \
-  psql -U demo -d workshop -c "DROP TABLE IF EXISTS dr_test;"
+  psql -U workshopuser -d workshop -c "DROP TABLE IF EXISTS dr_test;"
 ----
 
-Remove the snapshots (optional -- they do not affect the running cluster):
+Remove the manual snapshot:
 
 [source,bash,role=execute,subs="attributes+"]
 ----
 oc exec -n {linbit_namespace} deploy/linstor-controller -- \
-  linstor snapshot delete ${LINSTOR_RESOURCE} snap-baseline
+  linstor snapshot delete ${LINSTOR_RESOURCE} snap-baseline 2>/dev/null || true
 ----
+
+List and delete the backup snapshots:
+
+[source,bash,role=execute,subs="attributes+"]
+----
+oc exec -n {linbit_namespace} deploy/linstor-controller -- linstor snapshot list
+----
+
+Delete each backup snapshot shown in the output:
+
+[source,bash,role=execute,subs="attributes+"]
+----
+for SNAP in $(oc exec -n {linbit_namespace} deploy/linstor-controller -- \
+  linstor -m snapshot list 2>/dev/null | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+for snap in data:
+    for s in snap.get('snapshot_dfns', []):
+        name = s.get('snapshot_name', '')
+        if name.startswith('back_'):
+            print(name)
+" 2>/dev/null); do
+  echo "Deleting snapshot: $SNAP"
+  oc exec -n {linbit_namespace} deploy/linstor-controller -- \
+    linstor snapshot delete ${LINSTOR_RESOURCE} "$SNAP"
+done
+----
+
+Remove the S3 remote, MinIO deployment, and service:
+
+[source,bash,role=execute,subs="attributes+"]
+----
+oc exec -n {linbit_namespace} deploy/linstor-controller -- \
+  linstor remote delete workshop-dr-target
+oc delete deploy/minio svc/minio -n {workshop_namespace}
+----
+
+.Sample output
+[%collapsible]
+====
+[source,text]
+----
+SUCCESS:
+Description:
+    Remote: workshop-dr-target marked for deletion.
+    ...
+SUCCESS:
+Description:
+    Remote: workshop-dr-target deleted.
+deployment.apps "minio" deleted
+service "minio" deleted
+----
+====
 
 == Summary
 
 In this module you:
 
-* Configured an S3 remote target for LINSTOR backup shipping
-* Took a full baseline snapshot and shipped it to S3
-* Generated new data and took an incremental snapshot
-* Verified that only changed blocks were shipped (delta-only model)
-* Discussed RPO, restoration, and encryption considerations for edge DR
+* Configured LINSTOR's encryption passphrase for secure credential storage
+* Deployed MinIO as an in-cluster S3 endpoint and registered it as a LINSTOR backup remote
+* Shipped a full baseline backup (38 MiB) to S3
+* Generated new data and shipped an incremental backup (684 KiB -- 98% smaller)
+* Verified the delta-only backup model using MinIO's object listing
+* Discussed RPO strategies, restoration workflows, backup chain management, and encryption for edge DR
 
 == Workshop Complete
 
@@ -278,14 +522,12 @@ Congratulations! You have completed all five modules of the LINBIT Edge Storage 
 
 You now have hands-on experience with:
 
-* LINSTOR/DRBD architecture on OpenShift
+* LINSTOR/DRBD architecture on OpenShift with Two-Node with Arbiter (TNA) topology
 * Topology-aware database placement with `WaitForFirstConsumer`
-* Zero-downtime VM live migration with block-level RWX
-* Node failure resilience with DRBD quorum
+* Node failure resilience with DRBD quorum and automatic recovery
 * Geographic disaster recovery with incremental S3 snapshot shipping
 
 For additional resources:
 
 * https://linbit.com/drbd-user-guide/linstor-guide-1_0-en/[LINSTOR User Guide]
 * https://docs.openshift.com/container-platform/latest/storage/index.html[OpenShift Storage Documentation]
-* https://github.com/tosin2013/openshift-agent-install[openshift-agent-install] -- for TNF cluster bootstrap
