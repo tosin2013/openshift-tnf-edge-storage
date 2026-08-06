@@ -89,12 +89,10 @@ ocp4_workload_showroom_content_antora_playbook: site.yml
 ocp4_workload_showroom_terminal_type: showroom
 ocp4_workload_showroom_terminal_image: "quay.io/rhpds/openshift-showroom-terminal-ocp:latest"
 
-# F3 — Inject runtime values into Showroom content attributes.
-# Replaces %placeholder% tokens in content/antora.yml at deploy time.
-# For Model A (per-student Showroom), deploy.sh Phase 4 overrides these
-# per student namespace using student cluster credentials.
-ocp4_workload_showroom_content_user_data:
-  guid: "{{ guid }}"
-  openshift_cluster_ingress_domain: "apps.{{ guid }}.{{ subdomain_base_suffix | regex_replace('^[.]', '') }}"
-  api_url: "https://api.{{ guid }}.{{ subdomain_base_suffix | regex_replace('^[.]', '') }}:6443"
-  admin_password: "{{ hostvars.localhost.kubeadmin_password | default('see-kubeadmin-password-file') }}"
+# F3 — The Showroom content container substitutes %key% placeholders in
+# antora.yml using values from the showroom-userdata ConfigMap.
+# AgnosticD auto-injects standard keys (guid, openshift_api_url,
+# openshift_cluster_admin_password, openshift_cluster_ingress_domain, etc.)
+# so no custom content_user_data is needed for the hub Showroom.
+# For per-student Showroom instances, deploy.sh Phase 4 creates
+# student-specific userdata ConfigMaps with student cluster credentials.

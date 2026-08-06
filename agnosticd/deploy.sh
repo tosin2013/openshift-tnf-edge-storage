@@ -392,8 +392,10 @@ fi
 
 # -----------------------------------------------------------------
 # Phase 4: Deploy per-student Showroom instances on the hub (Model A)
-# Each student gets a dedicated Showroom namespace on the hub cluster,
-# configured with their own cluster's API URL and credentials.
+# Clones the exact resource structure that AgnosticD deploys:
+#   SA, RoleBinding, 3 ConfigMaps, PVC, Deployment (3 containers),
+#   Service, Route.
+# Each student gets a dedicated namespace with their own cluster creds.
 # -----------------------------------------------------------------
 echo "============================================================"
 echo "Phase 4: Deploying per-student Showroom instances on hub"
@@ -403,8 +405,9 @@ export KUBECONFIG="$KUBECONFIG_PATH"
 
 SHOWROOM_GIT_REPO="${SHOWROOM_GIT_REPO:-https://github.com/tosin2013/openshift-tnf-edge-storage.git}"
 SHOWROOM_GIT_REF="${SHOWROOM_GIT_REF:-main}"
-SHOWROOM_IMAGE="${SHOWROOM_IMAGE:-quay.io/rhpds/openshift-showroom:latest}"
+SHOWROOM_CONTENT_IMAGE="${SHOWROOM_CONTENT_IMAGE:-ghcr.io/rhpds/showroom-content:prod}"
 SHOWROOM_TERMINAL_IMAGE="${SHOWROOM_TERMINAL_IMAGE:-quay.io/rhpds/openshift-showroom-terminal-ocp:latest}"
+SHOWROOM_NGINX_IMAGE="${SHOWROOM_NGINX_IMAGE:-quay.io/rhpds/nginx:1.25}"
 
 STUDENT_OUTPUT_ROOT="${AGNOSTICD_ROOT}/../agnosticd-v2-output"
 
@@ -413,107 +416,129 @@ deploy_student_showroom() {
   local student_guid="${BASE_GUID}-s${student_num}"
   local ns="showroom-student-${student_num}"
 
-  # Discover student cluster credentials
+  # --- Discover student cluster credentials ---
   local student_output="${STUDENT_OUTPUT_ROOT}/${student_guid}"
   local student_kubeadmin_pw=""
   local student_api_url=""
   local student_ingress_domain=""
 
-  # Find kubeadmin password
   for pw_file in \
     "${student_output}/auth/kubeadmin-password" \
     "${student_output}/ocp4-cluster/auth/kubeadmin-password"; do
-    if [[ -f "$pw_file" ]]; then
-      student_kubeadmin_pw="$(cat "$pw_file")"
-      break
-    fi
+    [[ -f "$pw_file" ]] && student_kubeadmin_pw="$(cat "$pw_file")" && break
   done
   [[ -n "$student_kubeadmin_pw" ]] || { echo "WARN: kubeadmin-password not found for $student_guid"; student_kubeadmin_pw="check-deployment-output"; }
 
-  # Find student API URL from deployment info
   local deploy_info="${student_output}/deployment_info.txt"
   if [[ -f "$deploy_info" ]]; then
     student_api_url="$(grep '^api_url=' "$deploy_info" | cut -d= -f2-)"
   fi
-  # Fallback: construct from GUID and base domain
   if [[ -z "$student_api_url" ]]; then
     local base_domain="${BASE_DOMAIN:-${ACCOUNT}.opentlc.com}"
     student_api_url="https://api.${student_guid}.${base_domain}:6443"
   fi
-
   student_ingress_domain="$(echo "$student_api_url" | sed 's|https://api\.|apps.|; s|:6443||')"
 
   echo "==> Student $student_num Showroom (ns=$ns)"
   echo "    API:     $student_api_url"
   echo "    Ingress: $student_ingress_domain"
 
-  # Create namespace
+  # --- Namespace + RBAC ---
   oc create namespace "$ns" 2>/dev/null || true
   oc label namespace "$ns" purpose=showroom student="student-${student_num}" --overwrite
+  oc create sa showroom -n "$ns" 2>/dev/null || true
+  oc create rolebinding edit-showroom-sa -n "$ns" \
+    --clusterrole=edit --serviceaccount="${ns}:showroom" 2>/dev/null || true
 
-  # ConfigMap with Antora user_data for this student's cluster
-  cat <<CMEOF | oc apply -f -
+  # --- ConfigMap: showroom-userdata (student-specific credentials) ---
+  cat <<UDEOF | oc apply -f -
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: showroom-user-data
+  name: showroom-userdata
   namespace: ${ns}
 data:
-  guid: "${student_guid}"
-  openshift_cluster_ingress_domain: "${student_ingress_domain}"
-  api_url: "${student_api_url}"
-  admin_password: "${student_kubeadmin_pw}"
-CMEOF
+  user_data.yml: |
+    "guid": "${student_guid}"
+    "openshift_cluster_ingress_domain": "${student_ingress_domain}"
+    "openshift_api_url": "${student_api_url}"
+    "openshift_api_server_url": "${student_api_url}"
+    "openshift_cluster_admin_password": "${student_kubeadmin_pw}"
+    "openshift_cluster_admin_username": "kubeadmin"
+    "openshift_console_url": "https://console-openshift-console.${student_ingress_domain}"
+    "openshift_cluster_console_url": "https://console-openshift-console.${student_ingress_domain}"
+    "bastion_ssh_user_name": "lab-user"
+UDEOF
 
-  # Showroom Deployment
-  cat <<DEPLEOF | oc apply -f -
-apiVersion: apps/v1
-kind: Deployment
+  # --- ConfigMap: showroom-proxy-config (nginx reverse proxy) ---
+  cat <<'NGEOF' | oc apply -n "$ns" -f -
+apiVersion: v1
+kind: ConfigMap
 metadata:
-  name: showroom
+  name: showroom-proxy-config
+data:
+  nginx.conf: |
+    events {}
+    error_log /dev/stdout info;
+    http {
+      include /etc/nginx/mime.types;
+      proxy_cache off;
+      expires -1;
+      proxy_cache_path /dev/null keys_zone=mycache:10m;
+      map $http_upgrade $connection_upgrade {
+          default upgrade;
+          '' close;
+      }
+      server {
+        listen 8080;
+        absolute_redirect off;
+        location / {
+          index index.html;
+          root /data/www;
+        }
+        location /content/ {
+          proxy_pass http://localhost:8000;
+          rewrite ^/content/(.*)$ /$1 break;
+          expires off;
+          proxy_cache off;
+          proxy_pass_request_headers on;
+          proxy_set_header Accept-Encoding "gzip";
+          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+          proxy_set_header X-Forwarded-Proto $scheme;
+        }
+        location /terminal/ {
+          proxy_pass http://localhost:7681;
+          rewrite ^/terminal/(.*)$ /$1 break;
+          proxy_http_version 1.1;
+          proxy_set_header Upgrade $http_upgrade;
+          proxy_set_header Connection "upgrade";
+          proxy_read_timeout 43200000;
+          proxy_set_header X-Real-IP $remote_addr;
+          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+          proxy_set_header Host $http_host;
+          proxy_set_header X-NginX-Proxy true;
+        }
+      }
+    }
+NGEOF
+
+  # --- PVC: terminal home directory ---
+  cat <<PVCEOF | oc apply -f -
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: showroom-terminal-lab-user-home
   namespace: ${ns}
-  labels:
-    app: showroom
-    student: student-${student_num}
 spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: showroom
-  template:
-    metadata:
-      labels:
-        app: showroom
-        student: student-${student_num}
-    spec:
-      containers:
-        - name: showroom
-          image: ${SHOWROOM_IMAGE}
-          ports:
-            - containerPort: 8080
-              name: http
-          env:
-            - name: GIT_REPO_URL
-              value: "${SHOWROOM_GIT_REPO}"
-            - name: GIT_REPO_REF
-              value: "${SHOWROOM_GIT_REF}"
-            - name: GUID
-              valueFrom:
-                configMapKeyRef:
-                  name: showroom-user-data
-                  key: guid
-          envFrom:
-            - configMapRef:
-                name: showroom-user-data
-        - name: terminal
-          image: ${SHOWROOM_TERMINAL_IMAGE}
-          ports:
-            - containerPort: 7681
-              name: terminal
-          env:
-            - name: OC_LOGIN_COMMAND
-              value: "oc login ${student_api_url} -u kubeadmin -p '${student_kubeadmin_pw}' --insecure-skip-tls-verify"
----
+  accessModes: [ReadWriteOnce]
+  storageClassName: gp3-csi
+  resources:
+    requests:
+      storage: 5Gi
+PVCEOF
+
+  # --- Service + Route (created before Deployment so we can read the hostname) ---
+  cat <<SVCEOF | oc apply -f -
 apiVersion: v1
 kind: Service
 metadata:
@@ -521,22 +546,20 @@ metadata:
   namespace: ${ns}
 spec:
   selector:
-    app: showroom
+    app.kubernetes.io/name: showroom
   ports:
-    - name: http
+    - name: web
       port: 8080
       targetPort: 8080
-    - name: terminal
-      port: 7681
-      targetPort: 7681
 ---
 apiVersion: route.openshift.io/v1
 kind: Route
 metadata:
   name: showroom
   namespace: ${ns}
-  labels:
-    app: showroom
+  annotations:
+    haproxy.router.openshift.io/timeout: 1h
+    haproxy.router.openshift.io/timeout-tunnel: 1h
 spec:
   tls:
     termination: edge
@@ -546,11 +569,179 @@ spec:
     name: showroom
     weight: 100
   port:
-    targetPort: http
-DEPLEOF
+    targetPort: 8080
+SVCEOF
 
-  local route_host
-  route_host="$(oc get route showroom -n "$ns" -o jsonpath='{.spec.host}' 2>/dev/null || echo "pending")"
+  # Wait for Route to get a hostname
+  local route_host=""
+  for _rw in $(seq 1 10); do
+    route_host="$(oc get route showroom -n "$ns" -o jsonpath='{.spec.host}' 2>/dev/null || true)"
+    [[ -n "$route_host" ]] && break
+    sleep 2
+  done
+  [[ -n "$route_host" ]] || route_host="showroom-${ns}.apps.placeholder"
+  echo "    Route:   https://${route_host}"
+
+  # --- ConfigMap: showroom-index (HTML shell with route-specific iframes) ---
+  cat <<IDXEOF | oc apply -f -
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: showroom-index
+  namespace: ${ns}
+data:
+  index.html: |
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <title>Showroom — Student ${student_num}</title>
+        <meta http-equiv="content-type" content="text/html; charset=UTF-8" />
+        <link rel="stylesheet" type="text/css" href="split.css">
+        <link rel="stylesheet" type="text/css" href="tabs.css">
+      </head>
+      <body>
+        <div class="content">
+          <div class="split left">
+            <iframe id="doc" src="https://${route_host}/content" width="100%" style="border:none;"></iframe>
+          </div>
+          <div class="split right">
+            <div class="tab">
+              <button class="tablinks" onclick="openTerminal(event, 'terminal_tab1')" id="defaultOpen" tabindex="0">Terminal 1</button>
+            </div>
+            <div id="terminal_tab1" class="tabcontent">
+              <iframe id="terminal_01" src="https://${route_host}/terminal" width="100%" style="border:none;"></iframe>
+            </div>
+          </div>
+        </div>
+        <script>
+          document.getElementById("defaultOpen").click();
+          function openTerminal(evt, tabName) {
+            var i, tabcontent, tablinks;
+            tabcontent = document.getElementsByClassName("tabcontent");
+            for (i = 0; i < tabcontent.length; i++) { tabcontent[i].style.display = "none"; }
+            tablinks = document.getElementsByClassName("tablinks");
+            for (i = 0; i < tablinks.length; i++) { tablinks[i].className = tablinks[i].className.replace(" active", ""); }
+            document.getElementById(tabName).style.display = "block";
+            evt.currentTarget.className += "active";
+          }
+        </script>
+        <script src="https://unpkg.com/split.js/dist/split.min.js"></script>
+        <script>
+          Split(['.left', '.right'], { sizes: [45,55] });
+        </script>
+      </body>
+    </html>
+  split.css: |
+    * { box-sizing: border-box; height:100%; }
+    body { margin: 0; height:100%; }
+    .content { width: 100%; height: 100%; padding: 0; display: flex; border-top: 1px solid Gainsboro; }
+    .split { width:100%; height:100%; padding: 5px; }
+    .gutter { height: 98%; background-color: #eee; background-repeat: no-repeat; background-position: 50%; }
+    .gutter.gutter-horizontal { background-image: url('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAUAAAAeCAYAAADkftS9AAAAIklEQVQoU2M4c+bMfxAGAgYYmwGrIIiDjrELjpo5aiZeMwF+yNnOs5KSvgAAAABJRU5ErkJggg=='); cursor: col-resize; }
+  tabs.css: |
+    .tab { overflow: hidden; border: 1px solid #ccc; background-color: #f1f1f1; height: 50px; }
+    .tab button { background-color: inherit; float: left; border: none; outline: none; cursor: pointer; padding: 14px 16px; transition: 0.3s; }
+    .tab button:hover { background-color: #ddd; }
+    .tab button.active { background-color: #ccc; }
+    .tabcontent { display: none; padding: 6px 12px; border: 1px solid #ccc; border-top: none; height: calc(100% - 50px); }
+IDXEOF
+
+  # --- Deployment (3 containers: nginx, content, terminal) ---
+  cat <<DEPEOF | oc apply -f -
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: showroom
+  namespace: ${ns}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: showroom
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: showroom
+    spec:
+      serviceAccountName: showroom
+      containers:
+        - name: nginx
+          image: ${SHOWROOM_NGINX_IMAGE}
+          ports:
+            - containerPort: 8080
+              name: web
+          volumeMounts:
+            - name: nginx-config
+              mountPath: /etc/nginx/nginx.conf
+              subPath: nginx.conf
+            - name: content
+              mountPath: /data/www
+            - name: nginx-cache
+              mountPath: /var/cache/nginx
+            - name: nginx-pid
+              mountPath: /var/run
+        - name: content
+          image: ${SHOWROOM_CONTENT_IMAGE}
+          env:
+            - name: GIT_REPO_URL
+              value: "${SHOWROOM_GIT_REPO}"
+            - name: GIT_REPO_REF
+              value: "${SHOWROOM_GIT_REF}"
+            - name: ANTORA_PLAYBOOK
+              value: site.yml
+          ports:
+            - containerPort: 8000
+          livenessProbe:
+            httpGet: { path: /, port: 8000 }
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: { path: /, port: 8000 }
+            periodSeconds: 10
+          volumeMounts:
+            - name: user-data
+              mountPath: /user_data/
+            - name: showroom
+              mountPath: /showroom/
+        - name: terminal
+          image: ${SHOWROOM_TERMINAL_IMAGE}
+          env:
+            - name: NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: GUID
+              value: "${student_guid}"
+          ports:
+            - containerPort: 7681
+          resources:
+            requests: { cpu: 50m, memory: 256Mi }
+            limits:   { cpu: 500m, memory: 1Gi }
+          volumeMounts:
+            - name: terminal-lab-user-home
+              mountPath: /home/lab-user
+      volumes:
+        - name: showroom
+          emptyDir: {}
+        - name: user-data
+          configMap:
+            name: showroom-userdata
+        - name: content
+          configMap:
+            name: showroom-index
+        - name: nginx-config
+          configMap:
+            name: showroom-proxy-config
+        - name: nginx-pid
+          emptyDir: {}
+        - name: nginx-cache
+          emptyDir: {}
+        - name: terminal-lab-user-home
+          persistentVolumeClaim:
+            claimName: showroom-terminal-lab-user-home
+DEPEOF
+
   echo "    Showroom URL: https://${route_host}"
 }
 
