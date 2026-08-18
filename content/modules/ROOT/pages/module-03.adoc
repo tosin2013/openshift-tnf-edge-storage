@@ -8,21 +8,25 @@
 ****
 
 [IMPORTANT]
-.Hardware Requirement -- Skip If Not Met
+.When this module is required vs optional
 ====
-This module requires worker nodes with hardware-assisted virtualization (KVM).
-On AWS, this means `.metal` instance types (e.g., `m5.metal`, `m7a.metal-48xl`).
-Standard virtualized EC2 instances do *not* expose `/dev/kvm` and will fail with `Insufficient devices.kubevirt.io/kvm`.
+This module needs hardware-assisted virtualization (KVM on the nodes).
 
-*Check your environment:*
+*Required* (do not skip) when the cluster is either:
+
+* AWS `virt-enabled` student profile -- CP nodes are `m5zn.metal` (or another `.metal` type), or
+* KVM / TNF (libvirt or bare metal with fencing)
+
+*Optional* (skip and go to xref:module-04.adoc[Module 4]) *only* when *neither* of those is configured -- typically AWS `standard` (`m7a.4xlarge`). Those instances do not expose `/dev/kvm` and fail with `Insufficient devices.kubevirt.io/kvm`.
+
+*Check:*
 
 [source,bash,role=execute,subs="attributes+"]
 ----
 oc get nodes -o custom-columns='NODE:.metadata.name,KVM:.status.capacity.devices\.kubevirt\.io/kvm,INSTANCE-TYPE:.metadata.labels.node\.kubernetes\.io/instance-type'
 ----
 
-If the KVM column shows `<none>` or `0` for all nodes, *skip this module* and proceed directly to xref:module-04.adoc[Module 4 -- Resilience Under Failure].
-The concepts covered here (DRBD dual-primary, block RWX) will be revisited in the summary.
+Skip *only* if the KVM column is `<none>` or `0` on every node *and* you are not on metal or TNF.
 ====
 
 == Introduction

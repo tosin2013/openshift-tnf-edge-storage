@@ -1,0 +1,92 @@
+---
+description: Pattern for validating and enriching workshop modules after live testing
+globs: content/modules/ROOT/pages/module-*.adoc
+alwaysApply: false
+---
+
+# Module Validation & Enrichment Workflow
+
+After running `workshop-tester` on any module, review the actual command output
+against the module content and apply these improvements:
+
+## Sample Output Blocks
+
+Add `.Sample output` or `.Expected output` blocks after every `oc` / `linstor`
+command so students can compare their terminal results. Use generalized node
+names (`node-1`, `node-2`, `node-3`) so samples work across deployments.
+
+Format:
+
+```asciidoc
+.Sample output
+[source,text]
+----
+(paste actual output here, generalized)
+----
+```
+
+Use descriptive titles when helpful:
+- `.Expected output (Pending is correct at this stage)`
+- `.Expected output (empty table confirms cleanup)`
+- `.Key section from the output`
+
+## Terminology Accuracy
+
+Fix any mismatches between what the module says and what actually appears in
+command output. Examples caught in module-01:
+
+- CONTROLLER node type does not appear in `linstor node list` (all show SATELLITE)
+- DRBD state is `Diskless` not `TieBreaker` or `DisklessClient`
+- Storage pools are `LVM_THIN` not plain `LVM`
+
+## Explanation Tables
+
+Add `[cols="1,2"]` tables to explain output columns or parameters that students
+need to interpret. Place them after the sample output block.
+
+## Pod Security
+
+Add `securityContext` to all pod specs in code blocks to avoid PodSecurity
+warnings that would confuse students:
+
+```yaml
+spec:
+  securityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+```
+
+## New Learnings
+
+Capture insights from live testing that enrich the module beyond its original
+scope. Examples from module-01:
+
+- TNA topology mapping (2 primary + 1 arbiter) — connected storage pools to node roles
+- Thin provisioning implications for edge overcommit
+- DRBD quorum behavior and the Vote column
+- `WaitForFirstConsumer` and data locality
+
+## Summary Section
+
+Update the Summary bullet points to reflect richer learning outcomes based on
+what was actually observed during testing, not just what the original outline
+planned.
+
+## Checklist
+
+1. Run each command from the Showroom terminal container (as students will)
+2. Capture actual output
+3. Compare against module text for gaps/mismatches
+4. Add sample output blocks
+5. Add explanation tables where needed
+6. Fix terminology
+7. Add securityContext to pod specs
+8. Capture new learnings
+9. Update Summary
+10. Commit, push, restart Showroom, verify rendered content

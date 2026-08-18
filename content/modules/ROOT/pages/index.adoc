@@ -74,7 +74,7 @@ LINSTOR uses local or virtio disks and two diskful replicas with Pacemaker-based
 | 45 min
 
 | xref:module-03.adoc[Module 3]
-| VM Live Migration -- block RWX, `allow-two-primaries`, zero-downtime migration
+| VM Live Migration -- block RWX, `allow-two-primaries`, zero-downtime migration. *Required* on AWS `m5zn.metal` (`virt-enabled`) or KVM/TNF. *Optional* only on AWS `standard` (no KVM).
 | 45 min
 
 | xref:module-04.adoc[Module 4]

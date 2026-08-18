@@ -343,6 +343,71 @@ delete_vpc_deep() {
     return 0
   fi
 
+  # Load balancers (IPI leftover ENIs block subnet/VPC delete)
+  local lb_arns
+  lb_arns="$(aws elbv2 describe-load-balancers --region "$AWS_REGION" --output json 2>/dev/null \
+    | VPC_ID="$vpc_id" python3 -c '
+import json, os, sys
+vpc = os.environ["VPC_ID"]
+for lb in json.load(sys.stdin).get("LoadBalancers", []):
+    if lb.get("VpcId") == vpc:
+        print(lb["LoadBalancerArn"])
+' 2>/dev/null || true)"
+  local lb_arn
+  for lb_arn in $lb_arns; do
+    [[ -z "$lb_arn" || "$lb_arn" == "None" ]] && continue
+    info "  Deleting ELBv2 $lb_arn"
+    aws elbv2 delete-load-balancer --region "$AWS_REGION" --load-balancer-arn "$lb_arn" || true
+  done
+  local clb_names
+  clb_names="$(aws elb describe-load-balancers --region "$AWS_REGION" --output json 2>/dev/null \
+    | VPC_ID="$vpc_id" python3 -c '
+import json, os, sys
+vpc = os.environ["VPC_ID"]
+for lb in json.load(sys.stdin).get("LoadBalancerDescriptions", []):
+    if lb.get("VPCId") == vpc:
+        print(lb["LoadBalancerName"])
+' 2>/dev/null || true)"
+  local clb
+  for clb in $clb_names; do
+    [[ -z "$clb" || "$clb" == "None" ]] && continue
+    info "  Deleting classic ELB $clb"
+    aws elb delete-load-balancer --region "$AWS_REGION" --load-balancer-name "$clb" || true
+  done
+  if [[ -n "${lb_arns// /}" || -n "${clb_names// /}" ]]; then
+    info "  Waiting for load balancers to release ENIs..."
+    local waited=0
+    while (( waited < 120 )); do
+      local eni_lb
+      eni_lb="$(aws ec2 describe-network-interfaces --region "$AWS_REGION" \
+        --filters "Name=vpc-id,Values=${vpc_id}" "Name=description,Values=ELB *" \
+        --query 'length(NetworkInterfaces)' --output text 2>/dev/null || echo 0)"
+      [[ "$eni_lb" == "0" || "$eni_lb" == "None" ]] && break
+      sleep 10
+      waited=$((waited + 10))
+    done
+  fi
+
+  # VPC endpoints (IPI S3 gateway endpoint blocks VPC delete)
+  local vpce_ids
+  vpce_ids="$(aws ec2 describe-vpc-endpoints --region "$AWS_REGION" \
+    --filters "Name=vpc-id,Values=${vpc_id}" \
+    --query 'VpcEndpoints[].VpcEndpointId' --output text 2>/dev/null || true)"
+  if [[ -n "${vpce_ids// /}" && "$vpce_ids" != "None" ]]; then
+    info "  Deleting VPC endpoints: $vpce_ids"
+    aws ec2 delete-vpc-endpoints --region "$AWS_REGION" --vpc-endpoint-ids $vpce_ids >/dev/null || true
+    local waited=0
+    while (( waited < 60 )); do
+      local left_ep
+      left_ep="$(aws ec2 describe-vpc-endpoints --region "$AWS_REGION" \
+        --filters "Name=vpc-id,Values=${vpc_id}" \
+        --query 'length(VpcEndpoints)' --output text 2>/dev/null || echo 0)"
+      [[ "$left_ep" == "0" || "$left_ep" == "None" ]] && break
+      sleep 5
+      waited=$((waited + 5))
+    done
+  fi
+
   # NAT gateways
   local nat_ids
   nat_ids="$(aws ec2 describe-nat-gateways --region "$AWS_REGION" \
@@ -428,14 +493,36 @@ for r in json.load(sys.stdin):
     aws ec2 delete-subnet --region "$AWS_REGION" --subnet-id "$sn" 2>/dev/null || true
   done
 
-  # Security groups (non-default)
+  # Security groups (non-default). Revoke ingress/egress first so
+  # OpenShift control-plane <-> node cross-references do not block delete.
   local sgs
   sgs="$(aws ec2 describe-security-groups --region "$AWS_REGION" \
     --filters "Name=vpc-id,Values=${vpc_id}" \
     --query 'SecurityGroups[?GroupName!=`default`].GroupId' --output text 2>/dev/null || true)"
-  # Revoke cross-refs then delete (two passes)
-  local pass sg
-  for pass in 1 2; do
+  local sg
+  for sg in $sgs; do
+    [[ -z "$sg" || "$sg" == "None" ]] && continue
+    aws ec2 describe-security-groups --region "$AWS_REGION" --group-ids "$sg" --output json 2>/dev/null \
+      | python3 -c '
+import json, sys
+d = json.load(sys.stdin)["SecurityGroups"][0]
+gid = d["GroupId"]
+ip = d.get("IpPermissions") or []
+ipe = d.get("IpPermissionsEgress") or []
+if ip:
+    open("/tmp/%s-in.json" % gid, "w").write(json.dumps({"GroupId": gid, "IpPermissions": ip}))
+if ipe:
+    open("/tmp/%s-eg.json" % gid, "w").write(json.dumps({"GroupId": gid, "IpPermissions": ipe}))
+' 2>/dev/null || true
+    if [[ -f "/tmp/${sg}-in.json" ]]; then
+      aws ec2 revoke-security-group-ingress --region "$AWS_REGION" --cli-input-json "file:///tmp/${sg}-in.json" 2>/dev/null || true
+    fi
+    if [[ -f "/tmp/${sg}-eg.json" ]]; then
+      aws ec2 revoke-security-group-egress --region "$AWS_REGION" --cli-input-json "file:///tmp/${sg}-eg.json" 2>/dev/null || true
+    fi
+  done
+  local pass
+  for pass in 1 2 3; do
     for sg in $sgs; do
       [[ -z "$sg" || "$sg" == "None" ]] && continue
       aws ec2 delete-security-group --region "$AWS_REGION" --group-id "$sg" 2>/dev/null || true

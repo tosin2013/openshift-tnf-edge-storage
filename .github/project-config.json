@@ -1,0 +1,19 @@
+{
+  "managed_by": "github-project-release-manager",
+  "project_number": 7,
+  "project_url": "https://github.com/users/tosin2013/projects/7",
+  "board_level": "full",
+  "release_strategy": "milestone-based",
+  "created_at": "2026-08-18",
+  "last_operational_run": "2026-08-18",
+  "release_gates": [
+    {
+      "id": "onboard-e2e-deploy",
+      "blocks": "any-github-release",
+      "skill": "project-onboard",
+      "mode": "prod",
+      "commands": ["./bootstrap.sh --mode prod", "./agnosticd/deploy.sh"],
+      "evidence": "hub + at least one student healthy via make status / make credentials"
+    }
+  ]
+}
