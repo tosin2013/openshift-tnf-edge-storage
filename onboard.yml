@@ -172,6 +172,11 @@ config:
       prompt: "Hub cluster GUID"
       default: "linbit-hub"
 
+    - key: student_instance_profile
+      prompt: "Student instance profile (standard=m7a.4xlarge/no KVM/$52/day, virt-enabled=m5zn.metal/KVM/$190/day)"
+      choices: ["standard", "virt-enabled"]
+      default: "standard"
+
     - key: parallel
       prompt: "Deploy student clusters in parallel?"
       choices: ["true", "false"]
@@ -272,12 +277,14 @@ validation:
 
 quota_checks:
   # Hub HA: ~30 vCPUs (3 CP + 2 workers + bastion via IPI)
-  # Each TNA student (agent-based): 2x m7a.4xlarge (32) + 1x m7a.xlarge (4) = 36 vCPUs
-  # needed supports arithmetic with ${num_students} (evaluated by bootstrap.sh)
+  # Student vCPUs depend on instance profile:
+  #   standard:     2x m7a.4xlarge (32) + 1x m7a.xlarge (4) = 36 vCPUs/student
+  #   virt-enabled: 2x m5zn.metal (96) + 1x m7a.xlarge (4) = 100 vCPUs/student
+  # Formula uses max (virt-enabled) so both profiles pass pre-flight.
   # Keep limit/usage commands single-line: YAML folded blocks with deeper
   # indentation preserve newlines, which breaks bootstrap.sh eval.
   - label: "EC2 vCPUs (On-Demand Standard)"
-    needed: "30 + 36 * ${num_students}"
+    needed: "30 + 100 * ${num_students}"
     limit_command: "aws service-quotas get-service-quota --service-code ec2 --quota-code L-1216C47A --region ${aws_region} --query Quota.Value --output text"
     usage_command: "aws ec2 describe-instances --region ${aws_region} --filters Name=instance-state-name,Values=running --output json | python3 -c \"import sys,json;d=json.load(sys.stdin);print(sum(i.get('CpuOptions',{}).get('CoreCount',1)*i.get('CpuOptions',{}).get('ThreadsPerCore',2) for r in d.get('Reservations',[]) for i in r.get('Instances',[])))\""
     fail_message: >-
@@ -325,7 +332,9 @@ post_setup:
       Hub cluster:      HA (3 CP + 2 Workers) via IPI — RHACM + Showroom
       Student clusters: ${num_students} x true TNA (2 CP + 1 arbiter = 3 nodes)
                         via agent-based installer on EC2 — LINBIT SDS
-                        ~$52/day per student (m7a.4xlarge CP + m7a.xlarge arbiter)
+      Instance profile: ${student_instance_profile}
+        standard:       m7a.4xlarge CP — ~$52/day/student (no KVM, Module 3 skipped)
+        virt-enabled:   m5zn.metal CP — ~$190/day/student (real KVM, all modules)
 
     Ensure your secrets file has real AWS credentials:
       ${agnosticd_root}/../agnosticd-v2-secrets/secrets-${account}.yml

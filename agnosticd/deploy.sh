@@ -63,6 +63,18 @@ YES="${YES:-false}"
 # Student deploy method: "agent-based" (true TNA) or "ipi" (legacy 6-node via AgnosticD)
 STUDENT_DEPLOY_METHOD="${STUDENT_DEPLOY_METHOD:-agent-based}"
 
+# Instance profile: "standard" (m7a.4xlarge, no KVM) or "virt-enabled" (m5zn.metal, real KVM)
+STUDENT_INSTANCE_PROFILE="${STUDENT_INSTANCE_PROFILE:-standard}"
+case "$STUDENT_INSTANCE_PROFILE" in
+  virt-enabled)
+    CP_INSTANCE_TYPE="${CP_INSTANCE_TYPE:-m5zn.metal}"
+    ;;
+  *)
+    CP_INSTANCE_TYPE="${CP_INSTANCE_TYPE:-m7a.4xlarge}"
+    ;;
+esac
+export CP_INSTANCE_TYPE
+
 # CLI flags
 for arg in "$@"; do
   case "$arg" in
@@ -272,6 +284,7 @@ unset KUBECONFIG
 echo "============================================================"
 echo "Phase 3: Deploying $NUM_STUDENTS student cluster(s)"
 echo "  Method:    ${STUDENT_DEPLOY_METHOD}"
+echo "  Profile:   ${STUDENT_INSTANCE_PROFILE} (CP: ${CP_INSTANCE_TYPE})"
 echo "  Topology:  TNA (2 primary + 1 arbiter)"
 echo "  Workloads: cert-manager, LINBIT SDS (field-content), RHACM import"
 echo "============================================================"
@@ -296,6 +309,11 @@ inject_hub_credentials() {
   sed_inplace "s|^ocp4_workload_rhacm_import_hub_api_url:.*|ocp4_workload_rhacm_import_hub_api_url: \"${HUB_API_URL}\"|" "$student_vars_file"
   sed_inplace "s|^ocp4_workload_rhacm_import_hub_token:.*|ocp4_workload_rhacm_import_hub_token: \"${HUB_TOKEN}\"|" "$student_vars_file"
   sed_inplace "s|^ocp4_workload_rhacm_import_student_cluster_name:.*|ocp4_workload_rhacm_import_student_cluster_name: \"${guid}\"|" "$student_vars_file"
+
+  # virt-enabled profile: disable nested KVM emulation (real hardware KVM on m5.metal)
+  if [[ "$STUDENT_INSTANCE_PROFILE" == "virt-enabled" ]]; then
+    sed_inplace "s|^ocp4_workload_openshift_virtualization_enabled_nested_kvm:.*|ocp4_workload_openshift_virtualization_enabled_nested_kvm: false|" "$student_vars_file"
+  fi
 
   echo "$student_vars_file"
 }
@@ -334,7 +352,8 @@ deploy_student_agent() {
       -e tna_guid="$guid" \
       -e tna_base_domain="${BASE_DOMAIN}" \
       -e tna_aws_region="${AWS_REGION:-us-east-2}" \
-      -e tna_owner="${OWNER:-tosin@redhat.com}"
+      -e tna_owner="${OWNER:-tosin@redhat.com}" \
+      -e tna_cp_instance_type="${CP_INSTANCE_TYPE}"
   else
     "$SCRIPT_DIR/deploy-tna.sh" \
       --guid "$guid" \
@@ -346,11 +365,110 @@ deploy_student_agent() {
   echo "==> Student TNA cluster ($guid) deployed."
 }
 
+deploy_student_workloads() {
+  local student_num="$1"
+  local guid="${BASE_GUID}-s${student_num}"
+  local student_output="${AGNOSTICD_ROOT}/../agnosticd-v2-output/${guid}"
+
+  echo "==> Deploying workloads on $guid via openshift-workloads ..."
+
+  local student_kc=""
+  for kc in "${student_output}/auth/kubeconfig" \
+            "${student_output}/agent-assets/iso-build/auth/kubeconfig"; do
+    [[ -f "$kc" ]] && student_kc="$kc" && break
+  done
+  if [[ -z "$student_kc" ]]; then
+    echo "ERROR: kubeconfig not found for $guid under $student_output"
+    return 1
+  fi
+
+  local api_url
+  api_url=$(KUBECONFIG="$student_kc" oc whoami --show-server 2>/dev/null)
+  echo "    Cluster API: $api_url"
+
+  KUBECONFIG="$student_kc" oc create sa workload-deployer -n kube-system 2>/dev/null || true
+  KUBECONFIG="$student_kc" oc adm policy add-cluster-role-to-user cluster-admin \
+    -z workload-deployer -n kube-system 2>/dev/null || true
+  local api_token
+  api_token=$(KUBECONFIG="$student_kc" oc create token workload-deployer -n kube-system --duration=24h)
+
+  local aws_key aws_secret
+  aws_key=$(aws configure get aws_access_key_id 2>/dev/null || echo "")
+  aws_secret=$(aws configure get aws_secret_access_key 2>/dev/null || echo "")
+
+  local base_domain="${BASE_DOMAIN:-${ACCOUNT}.opentlc.com}"
+  local hosted_zone_id=""
+  hosted_zone_id=$(aws route53 list-hosted-zones-by-name \
+    --dns-name "${base_domain}" --max-items 1 \
+    --query "HostedZones[0].Id" --output text 2>/dev/null | sed 's|/hostedzone/||' || echo "")
+  echo "    HostedZoneID: $hosted_zone_id"
+
+  local wl_vars="${AGNOSTICD_VARS}/linbit-student-${student_num}-workloads.yml"
+  local nested_kvm="true"
+  [[ "$STUDENT_INSTANCE_PROFILE" == "virt-enabled" ]] && nested_kvm="false"
+
+  inject_hub_credentials "$student_num" > /dev/null
+
+  cat > "$wl_vars" <<WLEOF
+---
+config: openshift-workloads
+cloud_provider: none
+
+requirements_content:
+  collections:
+    - name: https://github.com/rhpds/core_workloads.git
+      type: git
+      version: main
+
+clusters:
+  default:
+    api_url: "${api_url}"
+    api_token: "${api_token}"
+
+openshift_api_url: "${api_url}"
+openshift_api_key: "${api_token}"
+
+workloads:
+  - agnosticd.core_workloads.ocp4_workload_cert_manager
+  - agnosticd.core_workloads.ocp4_workload_openshift_gitops
+  - agnosticd.core_workloads.ocp4_workload_openshift_virtualization
+
+ocp4_workload_cert_manager_channel: stable-v1
+ocp4_workload_cert_manager_aws_hostedzoneid: "${hosted_zone_id}"
+ocp4_workload_cert_manager_aws_region: "${AWS_REGION:-us-east-2}"
+ocp4_workload_cert_manager_aws_access_key_id: "${aws_key}"
+ocp4_workload_cert_manager_aws_secret_access_key: "${aws_secret}"
+ocp4_workload_cert_manager_use_catalog_snapshot: false
+ocp4_workload_cert_manager_install_ingress_certificates: true
+ocp4_workload_cert_manager_install_api_certificates: false
+
+ocp4_workload_openshift_gitops_channel: latest
+ocp4_workload_openshift_gitops_setup_cluster_admin: true
+ocp4_workload_openshift_gitops_enable_route: true
+
+ocp4_workload_openshift_virtualization_channel: stable
+ocp4_workload_openshift_virtualization_enabled_nested_kvm: ${nested_kvm}
+ocp4_workload_openshift_virtualization_deploy_hyperconverged: true
+ocp4_workload_openshift_virtualization_install_virtctl: true
+WLEOF
+
+  echo "    Vars: $wl_vars"
+
+  local wl_config="linbit-student-${student_num}-workloads"
+  AGNOSTICD_ROOT="$AGNOSTICD_ROOT" "$SCRIPT_DIR/run-agd.sh" provision \
+    -g "${guid}-wl" \
+    -c "$wl_config" \
+    -a "$ACCOUNT"
+
+  echo "==> Workloads deployed on $guid."
+}
+
 deploy_student() {
   local student_num="$1"
   case "${STUDENT_DEPLOY_METHOD}" in
     agent-based|agent|tna)
       deploy_student_agent "$student_num"
+      deploy_student_workloads "$student_num"
       ;;
     ipi|agnosticd|legacy)
       deploy_student_ipi "$student_num"

@@ -6,10 +6,17 @@
 #
 # Deploy methods:
 #   agent-based (default): True TNA via CloudFormation + agent-based
-#     installer. 3 nodes total (2x m7a.4xlarge CP + 1x m7a.xlarge
-#     arbiter). ~$52/day per student.
+#     installer. 3 nodes total (2 CP + 1 arbiter).
 #   ipi (legacy): AWS IPI via AgnosticD. 6 nodes (3 CP + 3 workers).
 #     ~$85/day. Set STUDENT_DEPLOY_METHOD=ipi to use.
+#
+# Instance profiles (set via STUDENT_INSTANCE_PROFILE or config.yml):
+#   standard (default):  m7a.4xlarge CP — ~$52/day/student
+#     No hardware KVM. Module 3 (VM Live Migration) is skipped.
+#     CNV installs with nested KVM emulation (enabled_nested_kvm=true).
+#   virt-enabled:        m5zn.metal CP — ~$190/day/student
+#     Real hardware KVM (48 vCPU, 192 GiB). All modules including Module 3.
+#     CNV uses native KVM (enabled_nested_kvm=false).
 # ===================================================================
 
 tag: main
@@ -76,7 +83,9 @@ workloads:
 
 # ===================================================================
 # Workload: ocp4_workload_openshift_virtualization
-# CNV on AWS requires nested KVM emulation (no bare-metal nodes).
+# standard profile:     enabled_nested_kvm=true  (software emulation)
+# virt-enabled profile: enabled_nested_kvm=false (real hardware KVM on m5.metal)
+# deploy.sh overrides this var based on STUDENT_INSTANCE_PROFILE.
 # ===================================================================
 ocp4_workload_openshift_virtualization_channel: stable
 ocp4_workload_openshift_virtualization_enabled_nested_kvm: true

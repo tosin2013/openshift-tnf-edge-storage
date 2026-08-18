@@ -36,6 +36,7 @@ fi
 SSH_KEY_PATH="${SSH_KEY_PATH:-$HOME/.ssh/id_rsa.pub}"
 CP_INSTANCE_TYPE="${CP_INSTANCE_TYPE:-m7a.4xlarge}"
 ARBITER_INSTANCE_TYPE="${ARBITER_INSTANCE_TYPE:-m7a.xlarge}"
+BOOT_MODE="uefi-preferred"
 OCP_VERSION="${OCP_VERSION:-4.22}"
 OWNER="${OWNER:-tosin@redhat.com}"
 MACHINE_CIDR="${MACHINE_CIDR:-10.0.0.0/16}"
@@ -266,6 +267,8 @@ else
   ensure_vmimport_role
 
   RAW_PATH="${ISO_BUILD_DIR}/agent.raw"
+  info "Making ISO hybrid-bootable (BIOS + UEFI disk boot) ..."
+  isohybrid --uefi "$ISO_PATH"
   info "Converting ISO to raw disk image ..."
   cp "$ISO_PATH" "$RAW_PATH"
   truncate -s 16G "$RAW_PATH"
@@ -314,7 +317,7 @@ else
     --root-device-name /dev/sda1 \
     --virtualization-type hvm \
     --ena-support \
-    --boot-mode uefi-preferred \
+    --boot-mode "$BOOT_MODE" \
     --block-device-mappings "[{\"DeviceName\":\"/dev/sda1\",\"Ebs\":{\"SnapshotId\":\"${SNAPSHOT_ID}\",\"VolumeSize\":16,\"VolumeType\":\"gp3\",\"DeleteOnTermination\":true}}]" \
     --query 'ImageId' --output text)"
 

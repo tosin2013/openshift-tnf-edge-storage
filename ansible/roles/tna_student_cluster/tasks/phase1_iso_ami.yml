@@ -36,25 +36,51 @@
   register: _iso_stat
   failed_when: not _iso_stat.stat.exists
 
-# Check for cached AMI
-- name: Look for cached agent AMI
+# Check for cached AMI matching boot mode, then fall back to untagged AMIs
+# (pre-existing AMIs lack the boot-mode tag; reuse them for uefi-preferred)
+- name: Look for cached agent AMI (boot-mode tagged)
   amazon.aws.ec2_ami_info:
     region: "{{ tna_aws_region }}"
     owners: ["self"]
     filters:
       "tag:ocp-version": "{{ tna_ocp_version }}"
       "tag:purpose": "linbit-agent-iso"
+      "tag:boot-mode": "{{ tna_ami_boot_mode | trim }}"
   register: _cached_amis
 
-- name: Set cached AMI fact
+- name: Fallback -- look for untagged cached AMI (legacy uefi-preferred only)
+  amazon.aws.ec2_ami_info:
+    region: "{{ tna_aws_region }}"
+    owners: ["self"]
+    filters:
+      "tag:ocp-version": "{{ tna_ocp_version }}"
+      "tag:purpose": "linbit-agent-iso"
+  register: _cached_amis_untagged
+  when:
+    - _cached_amis.images | length == 0
+    - tna_ami_boot_mode | trim == 'uefi-preferred'
+
+- name: Set cached AMI fact (tagged match)
   ansible.builtin.set_fact:
     tna_agent_ami_id: >-
       {{ (_cached_amis.images | sort(attribute='creation_date') | last).image_id
          if _cached_amis.images | length > 0
          else '' }}
 
+- name: Set cached AMI fact (fallback to untagged)
+  ansible.builtin.set_fact:
+    tna_agent_ami_id: >-
+      {{ (_cached_amis_untagged.images | sort(attribute='creation_date') | last).image_id
+         if _cached_amis_untagged.images | length > 0
+         else '' }}
+  when:
+    - tna_agent_ami_id | trim | length == 0
+    - _cached_amis_untagged is defined
+    - _cached_amis_untagged is not skipped
+    - _cached_amis_untagged.images | default([]) | length > 0
+
 - name: Build AMI from ISO (when no cache exists)
-  when: tna_agent_ami_id | length == 0
+  when: tna_agent_ami_id | trim | length == 0
   block:
     - name: Ensure S3 bucket exists
       amazon.aws.s3_bucket:
@@ -110,6 +136,11 @@
                     - "ec2:RegisterImage"
                     - "ec2:Describe*"
                   Resource: "*"
+
+    - name: Make ISO hybrid-bootable (BIOS + UEFI disk boot)
+      ansible.builtin.command:
+        cmd: "isohybrid --uefi {{ tna_assets_dir }}/iso-build/agent.x86_64.iso"
+      changed_when: true
 
     - name: Convert ISO to raw disk image
       ansible.builtin.copy:
@@ -195,16 +226,16 @@
           --root-device-name /dev/sda1
           --virtualization-type hvm
           --ena-support
-          --boot-mode uefi-preferred
+          --boot-mode {{ tna_ami_boot_mode | trim }}
           --block-device-mappings '{{ _ami_bdm | trim }}'
           --query ImageId
           --output text
       register: _ami_register
       changed_when: true
 
-    - name: Set AMI ID fact
+    - name: Store new AMI ID (internal)
       ansible.builtin.set_fact:
-        tna_agent_ami_id: "{{ _ami_register.stdout | trim }}"
+        _new_ami_id: "{{ _ami_register.stdout | trim }}"
 
     - name: Tag AMI and snapshot
       amazon.aws.ec2_tag:
@@ -213,9 +244,10 @@
         tags:
           ocp-version: "{{ tna_ocp_version }}"
           purpose: linbit-agent-iso
+          boot-mode: "{{ tna_ami_boot_mode | trim }}"
           Name: "linbit-agent-ocp{{ tna_ocp_version }}"
       loop:
-        - "{{ tna_agent_ami_id }}"
+        - "{{ _new_ami_id }}"
         - "{{ _snapshot_id }}"
 
     - name: Clean up local raw image
@@ -231,6 +263,11 @@
         region: "{{ tna_aws_region }}"
       ignore_errors: true
 
+- name: Promote new AMI ID
+  ansible.builtin.set_fact:
+    tna_agent_ami_id: "{{ _new_ami_id }}"
+  when: _new_ami_id is defined and _new_ami_id | trim | length > 0
+
 - name: Display AMI result
   ansible.builtin.debug:
-    msg: "Agent AMI: {{ tna_agent_ami_id }}"
+    msg: "Agent AMI: {{ tna_agent_ami_id }} (boot-mode: {{ tna_ami_boot_mode | trim }})"

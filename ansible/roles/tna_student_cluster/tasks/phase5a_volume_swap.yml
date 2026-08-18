@@ -81,7 +81,18 @@
       - "{{ tna_arb_id }}"
     state: stopped
     wait: true
-    wait_timeout: 300
+    wait_timeout: 900
+
+- name: "Phase 1 — Ensure instances are fully stopped (bare-metal needs extra time)"
+  amazon.aws.ec2_instance_info:
+    region: "{{ tna_aws_region }}"
+    instance_ids:
+      - "{{ tna_cp1_id }}"
+      - "{{ tna_arb_id }}"
+  register: _stop_check
+  until: _stop_check.instances | map(attribute='state.name') | list | reject('equalto', 'stopped') | list | length == 0
+  retries: 30
+  delay: 30
 
 - name: "Phase 1 — Volume swap cp-1"
   ansible.builtin.include_tasks: _volume_swap_single.yml
@@ -105,7 +116,7 @@
       - "{{ tna_arb_id }}"
     state: running
     wait: true
-    wait_timeout: 300
+    wait_timeout: 900
 
 - name: "Phase 1 — Bootstrap status"
   ansible.builtin.debug:
@@ -259,7 +270,17 @@
       - "{{ tna_cp0_id }}"
     state: stopped
     wait: true
-    wait_timeout: 300
+    wait_timeout: 900
+
+- name: "Phase 2 — Ensure cp-0 is fully stopped"
+  amazon.aws.ec2_instance_info:
+    region: "{{ tna_aws_region }}"
+    instance_ids:
+      - "{{ tna_cp0_id }}"
+  register: _stop_check_cp0
+  until: _stop_check_cp0.instances[0].state.name == 'stopped'
+  retries: 30
+  delay: 30
 
 - name: "Phase 2 — Volume swap cp-0"
   ansible.builtin.include_tasks: _volume_swap_single.yml
@@ -275,7 +296,7 @@
       - "{{ tna_cp0_id }}"
     state: running
     wait: true
-    wait_timeout: 300
+    wait_timeout: 900
 
 # ---------- copy kubeconfig for subsequent phases ----------
 # The kubeconfig from the ISO build has a CA that doesn't match what the

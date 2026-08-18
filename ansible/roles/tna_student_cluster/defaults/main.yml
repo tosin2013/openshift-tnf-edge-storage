@@ -22,6 +22,12 @@ tna_ocp_version: "4.22"
 tna_cp_instance_type: m7a.4xlarge
 tna_arbiter_instance_type: m7a.xlarge
 
+# AMI boot mode: always uefi-preferred.
+# The ISO is made hybrid-bootable via isohybrid --uefi, so the resulting AMI
+# boots via UEFI on virtual instances and falls back to BIOS on bare-metal.
+# A single AMI works for both instance families.
+tna_ami_boot_mode: uefi-preferred
+
 # EBS volumes (GB)
 tna_cp_data_volume_size: 200
 tna_cp_linstor_volume_size: 50
