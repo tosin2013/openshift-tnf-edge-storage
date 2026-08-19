@@ -11,4 +11,6 @@ metadata:
     kubevirt.kubevirt.io/jsonpatch: >-
       [{"op":"add","path":"/spec/configuration/developerConfiguration/useEmulation","value":true}]
 {% endif %}
-spec: {}
+spec:
+  workloadSources:
+    enableCommonBootImageImport: false
