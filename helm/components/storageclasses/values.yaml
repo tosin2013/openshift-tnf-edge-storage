@@ -4,7 +4,7 @@ rwoLocality:
   storagePool: lvm-thin
   fsType: xfs
   isDefault: true
-  quorum: majority
+  quorum: io-error
   onNoQuorum: io-error
 
 rwxVirt:
@@ -12,5 +12,5 @@ rwxVirt:
   replicaCount: 2
   storagePool: lvm-thin
   allowTwoPrimaries: true
-  quorum: majority
+  quorum: io-error
   onNoQuorum: io-error

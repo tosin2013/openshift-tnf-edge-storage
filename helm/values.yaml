@@ -47,11 +47,15 @@ components:
       replicaCount: 2
       storagePool: lvm-thin
       fsType: xfs
+      quorum: io-error
+      onNoQuorum: io-error
     rwxVirt:
       name: linbit-rwx-virt
       replicaCount: 2
       storagePool: lvm-thin
       allowTwoPrimaries: true
+      quorum: io-error
+      onNoQuorum: io-error
 
   sampleDatabase:
     enabled: true

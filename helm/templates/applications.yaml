@@ -79,11 +79,15 @@ spec:
           replicaCount: {{ .Values.components.storageclasses.rwoLocality.replicaCount }}
           storagePool: {{ .Values.components.storageclasses.rwoLocality.storagePool }}
           fsType: {{ .Values.components.storageclasses.rwoLocality.fsType }}
+          quorum: {{ .Values.components.storageclasses.rwoLocality.quorum | default "io-error" | quote }}
+          onNoQuorum: {{ .Values.components.storageclasses.rwoLocality.onNoQuorum | default "io-error" | quote }}
         rwxVirt:
           name: {{ .Values.components.storageclasses.rwxVirt.name }}
           replicaCount: {{ .Values.components.storageclasses.rwxVirt.replicaCount }}
           storagePool: {{ .Values.components.storageclasses.rwxVirt.storagePool }}
           allowTwoPrimaries: {{ .Values.components.storageclasses.rwxVirt.allowTwoPrimaries }}
+          quorum: {{ .Values.components.storageclasses.rwxVirt.quorum | default "io-error" | quote }}
+          onNoQuorum: {{ .Values.components.storageclasses.rwxVirt.onNoQuorum | default "io-error" | quote }}
   destination:
     server: https://kubernetes.default.svc
   syncPolicy:

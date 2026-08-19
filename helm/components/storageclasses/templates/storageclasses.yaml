@@ -2,8 +2,9 @@ apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
   name: {{ .Values.rwoLocality.name }}
-  {{- if .Values.rwoLocality.isDefault }}
   annotations:
+    argocd.argoproj.io/sync-options: Replace=true
+  {{- if .Values.rwoLocality.isDefault }}
     storageclass.kubernetes.io/is-default-class: "true"
   {{- end }}
 provisioner: linstor.csi.linbit.com
@@ -23,6 +24,8 @@ apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
   name: {{ .Values.rwxVirt.name }}
+  annotations:
+    argocd.argoproj.io/sync-options: Replace=true
 provisioner: linstor.csi.linbit.com
 parameters:
   autoPlace: "{{ .Values.rwxVirt.replicaCount }}"

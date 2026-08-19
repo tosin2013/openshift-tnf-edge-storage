@@ -10,7 +10,7 @@ parameters:
   autoPlace: "2"
   storagePool: lvm-thin
   csi.storage.k8s.io/fstype: xfs
-  property.linstor.csi.linbit.com/DrbdOptions/auto-quorum: majority
+  property.linstor.csi.linbit.com/DrbdOptions/auto-quorum: io-error
   property.linstor.csi.linbit.com/DrbdOptions/Resource/on-no-quorum: io-error
 volumeBindingMode: WaitForFirstConsumer
 reclaimPolicy: Delete
@@ -25,7 +25,7 @@ parameters:
   autoPlace: "2"
   storagePool: lvm-thin
   property.linstor.csi.linbit.com/DrbdOptions/Net/allow-two-primaries: "yes"
-  property.linstor.csi.linbit.com/DrbdOptions/auto-quorum: majority
+  property.linstor.csi.linbit.com/DrbdOptions/auto-quorum: io-error
   property.linstor.csi.linbit.com/DrbdOptions/Resource/on-no-quorum: io-error
 volumeBindingMode: Immediate
 reclaimPolicy: Delete
