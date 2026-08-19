@@ -1,7 +1,8 @@
 ---
 # Phase 7b: OpenShift GitOps + OpenShift Virtualization
 # Idempotent OLM install. Nested KVM via tna_enabled_nested_kvm
-# (standard=true, virt-enabled/metal=false).
+# (standard=true, virt-enabled/metal=false) applied as a KubeVirt jsonpatch
+# because HyperConverged.spec.kVMEmulation is gone in CNV 4.22.
 
 - name: Ensure kubeconfig fact is set
   ansible.builtin.set_fact:
@@ -42,6 +43,35 @@
         and (_gitops_csv.resources | map(attribute='status.phase') | select('eq', 'Succeeded') | list | length > 0)
       retries: "{{ (tna_csv_timeout / 10) | int }}"
       delay: 10
+
+    - name: Wait for Argo CD application-controller ServiceAccount
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ _kubeconfig }}"
+        kind: ServiceAccount
+        namespace: openshift-gitops
+        name: openshift-gitops-argocd-application-controller
+      register: _gitops_sa
+      until: _gitops_sa.resources | length > 0
+      retries: 36
+      delay: 5
+
+    - name: Grant Argo CD application controller cluster-admin
+      kubernetes.core.k8s:
+        kubeconfig: "{{ _kubeconfig }}"
+        state: present
+        definition:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: ClusterRoleBinding
+          metadata:
+            name: openshift-gitops-cluster-admin
+          roleRef:
+            apiGroup: rbac.authorization.k8s.io
+            kind: ClusterRole
+            name: cluster-admin
+          subjects:
+            - kind: ServiceAccount
+              name: openshift-gitops-argocd-application-controller
+              namespace: openshift-gitops
 
     - name: Wait for Argo CD server deployment
       kubernetes.core.k8s_info:

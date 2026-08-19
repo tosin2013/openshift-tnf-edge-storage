@@ -11,6 +11,9 @@ metadata:
 {{- $hasPullSecret := or .Values.registrySecret.create .Values.registrySecret.name }}
 spec:
   tolerations:
+    - key: node-role.kubernetes.io/arbiter
+      operator: Exists
+      effect: NoSchedule
     - key: linbit.com/arbiter
       operator: Exists
       effect: NoSchedule

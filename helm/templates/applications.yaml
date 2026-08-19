@@ -52,7 +52,7 @@ spec:
         maxDuration: 10m
     syncOptions:
       - CreateNamespace=true
-      - ServerSideApply=true
+      - SkipDryRunOnMissingResource=true
 {{- end }}
 
 {{- if .Values.components.storageclasses.enabled }}

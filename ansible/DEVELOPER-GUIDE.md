@@ -262,7 +262,7 @@ The encryption passphrase is read from AgnosticD `secrets.yml` (`linstor_encrypt
 **What it does:**
 - Installs OpenShift GitOps (ArgoCD) via OLM Subscription and waits for the CSV + `openshift-gitops-server` Deployment
 - Installs OpenShift Virtualization (CNV), waits for the CSV, applies `HyperConverged`
-- Sets `spec.kVMEmulation` from `tna_enabled_nested_kvm` (`true` on AWS `standard`, `false` on `virt-enabled` / metal)
+- Sets nested KVM via `kubevirt.kubevirt.io/jsonpatch` `useEmulation` from `tna_enabled_nested_kvm` (`true` on AWS `standard`, unset on `virt-enabled` / metal). HyperConverged `spec.kVMEmulation` was removed in CNV 4.22.
 
 **If it fails:** Check OperatorHub (`redhat-operators`) and CSV status in `openshift-operators` / `openshift-cnv`. Re-run with `TAGS=preflight,phase2,phase7b`.
 

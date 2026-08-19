@@ -4,5 +4,11 @@ kind: HyperConverged
 metadata:
   name: kubevirt-hyperconverged
   namespace: openshift-cnv
-spec:
-  kVMEmulation: {{ tna_enabled_nested_kvm | bool | to_json }}
+{% if tna_enabled_nested_kvm | bool %}
+  annotations:
+    # HCO 4.22 dropped spec.kVMEmulation; jsonpatch KubeVirt for QEMU fallback
+    # on AWS standard (no /dev/kvm). virt-enabled/metal leaves this unset.
+    kubevirt.kubevirt.io/jsonpatch: >-
+      [{"op":"add","path":"/spec/configuration/developerConfiguration/useEmulation","value":true}]
+{% endif %}
+spec: {}
