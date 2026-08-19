@@ -91,18 +91,24 @@ oc adm cordon ${CORDON_NODE}
 node/node-2 cordoned
 ----
 
-=== Step 4: Drain Workloads
+=== Step 4: Simulate satellite loss (do not drain)
 
-Drain the node to evict all non-DaemonSet pods:
+WARNING: AWS TNA student nodes are compact `control-plane,master,worker`. Do **not** `oc adm drain` them. Drain evicts kube-apiserver, etcd-adjacent pods, and the LINSTOR controller and can take the lab cluster down.
+
+Simulate the spare diskful node losing storage by deleting its LINSTOR satellite pod. The operator recreates it within seconds -- run the next `linstor resource list` immediately.
 
 [source,bash,role=execute,subs="attributes+"]
 ----
-oc adm drain ${CORDON_NODE} --ignore-daemonsets --delete-emptydir-data --force --timeout=120s
+oc delete pod -n {linbit_namespace} --field-selector spec.nodeName=${CORDON_NODE} -l app.kubernetes.io/component=linstor-satellite
 ----
 
-NOTE: The `--force` flag is required because some control-plane pods (etcd, kube-apiserver) run as static pods without a controller owner. Without `--force`, the drain would refuse to evict them.
+.Expected output
+[source,text]
+----
+pod "linstor-satellite.ip-10-0-1-11-xxxxx" deleted
+----
 
-This simulates what happens when a node fails: the DRBD satellite on that node becomes unreachable, and its replica goes stale.
+This is what a node failure looks like to DRBD: the satellite on that node becomes unreachable, and its replica goes stale until it returns.
 
 === Step 5: Verify DRBD Quorum
 
@@ -113,7 +119,7 @@ Check that DRBD volumes remain quorate despite the lost node:
 oc exec -n {linbit_namespace} deploy/linstor-controller -- linstor resource list
 ----
 
-.Sample output (during cordon)
+.Sample output (while the satellite is restarting)
 [source,text]
 ----
 ╭────────────────────────────────────────────────────────────────────────────────────────────────────╮
@@ -128,7 +134,7 @@ oc exec -n {linbit_namespace} deploy/linstor-controller -- linstor resource list
 The key observation: **quorum holds** because 2 of 3 voters (node-1 + node-3) are still reachable.
 
 * node-1 (`UpToDate`, `Vote: Yes`) -- the surviving diskful primary, still serving I/O
-* node-2 (`Unknown`) -- the drained node, unreachable
+* node-2 (`Unknown` or `Connecting`) -- the satellite that was deleted, briefly unreachable
 * node-3 (`Diskless`, `Vote: Yes`) -- the arbiter, still voting
 
 Without the arbiter, losing node-2 would leave only 1/2 voters and DRBD would freeze I/O (`io-error`).
@@ -284,7 +290,7 @@ oc adm uncordon <your-second-node>
 In this module you:
 
 * Identified the arbiter node by its `Diskless` state in `linstor resource list`
-* Simulated a node failure by cordoning and draining a diskful primary node
+* Simulated a diskful satellite going offline **without draining compact control-plane nodes** (TNA masters are also workers)
 * Verified DRBD quorum held (2/3 majority: surviving primary + arbiter) and the database remained accessible with no data loss
 * Observed DRBD automatic resynchronization: the returning node caught up from `Outdated` to `UpToDate`
 * Understood why the TNA arbiter model delivers the same resilience as 3-node Ceph with one fewer storage node
