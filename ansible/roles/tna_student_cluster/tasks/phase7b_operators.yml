@@ -3,6 +3,11 @@
 # Idempotent OLM install. Nested KVM via tna_enabled_nested_kvm
 # (standard=true, virt-enabled/metal=false).
 
+- name: Ensure kubeconfig fact is set
+  ansible.builtin.set_fact:
+    _kubeconfig: "{{ tna_kubeconfig_path }}"
+  when: _kubeconfig is not defined
+
 - name: Install OpenShift GitOps operator
   when: tna_install_gitops | bool
   block:
@@ -108,8 +113,23 @@
       retries: "{{ ((tna_csv_timeout | int) * 2 / 10) | int }}"
       delay: 10
 
+    - name: Wait for HyperConverged CRD
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ _kubeconfig }}"
+        api_version: apiextensions.k8s.io/v1
+        kind: CustomResourceDefinition
+        name: hyperconvergeds.hco.kubevirt.io
+      register: _hco_crd
+      until: _hco_crd.resources | length > 0
+      retries: 36
+      delay: 10
+
     - name: Apply HyperConverged CR
       kubernetes.core.k8s:
         kubeconfig: "{{ _kubeconfig }}"
         state: present
         template: hyperconverged.yml.j2
+      register: _hco
+      until: _hco is succeeded
+      retries: 12
+      delay: 10

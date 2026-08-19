@@ -59,6 +59,11 @@ STUDENT_CONFIG_NAME="linbit-student"
 NUM_STUDENTS="${NUM_STUDENTS:-2}"
 PARALLEL="${PARALLEL:-false}"
 YES="${YES:-false}"
+WORKLOADS_ONLY="${WORKLOADS_ONLY:-false}"
+# Skip hub provision when only attaching workloads to an existing student cluster
+if [[ "${WORKLOADS_ONLY}" == "true" ]]; then
+  DEPLOY_HUB=false
+fi
 
 # Student deploy method: "agent-based" (true TNA) or "ipi" (legacy 6-node via AgnosticD)
 STUDENT_DEPLOY_METHOD="${STUDENT_DEPLOY_METHOD:-agent-based}"
@@ -534,6 +539,12 @@ WLEOF
 
 deploy_student() {
   local student_num="$1"
+  if [[ "${WORKLOADS_ONLY}" == "true" ]]; then
+    echo "${BASE_GUID}-s${student_num}" >> "$MANIFEST"
+    echo "==> WORKLOADS_ONLY: skipping TNA installer for student ${student_num}"
+    deploy_student_workloads "$student_num"
+    return
+  fi
   case "${STUDENT_DEPLOY_METHOD}" in
     agent-based|agent|tna)
       deploy_student_agent "$student_num"
