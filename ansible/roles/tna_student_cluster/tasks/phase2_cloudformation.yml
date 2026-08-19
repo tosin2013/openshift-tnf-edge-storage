@@ -28,6 +28,20 @@
     region: "{{ tna_aws_region }}"
   when: _stack_failed | bool
 
+- name: Clean stale DNS records before stack create
+  amazon.aws.route53:
+    zone: "{{ tna_base_domain }}"
+    record: "{{ item }}.{{ tna_cluster_name }}.{{ tna_base_domain }}"
+    type: A
+    state: absent
+    wait: false
+  loop:
+    - api
+    - api-int
+    - "*.apps"
+  ignore_errors: true
+  when: not (_stack_exists | bool)
+
 - name: Deploy CloudFormation stack (new)
   amazon.aws.cloudformation:
     stack_name: "{{ tna_stack_name }}"

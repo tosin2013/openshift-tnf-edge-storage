@@ -353,9 +353,18 @@ Resources:
 
   # ─────────────────────────────────────────────────────────────
   # Network Load Balancer + Target Groups
+  # The NLB ENI is created in the same /24 as the nodes. Without
+  # DependsOn, CloudFormation creates it in parallel with the
+  # instances and AWS can assign the ENI 10.0.1.12 — the arbiter's
+  # static address — which fails Arbiter0 with "Address is in use".
+  # Claim .10/.11/.12 first, then let the NLB take a remaining IP.
   # ─────────────────────────────────────────────────────────────
   NLB:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    DependsOn:
+      - ControlPlane0
+      - ControlPlane1
+      - Arbiter0
     Properties:
       Name: !Sub '${ClusterName}-nlb'
       Scheme: internet-facing
@@ -483,16 +492,9 @@ Resources:
         DNSName: !GetAtt NLB.DNSName
         EvaluateTargetHealth: false
 
-  APIIntDNSRecord:
-    Type: AWS::Route53::RecordSet
-    Properties:
-      HostedZoneId: !Ref HostedZoneId
-      Name: !Sub 'api-int.${ClusterName}.${BaseDomain}.'
-      Type: A
-      AliasTarget:
-        HostedZoneId: !GetAtt NLB.CanonicalHostedZoneID
-        DNSName: !GetAtt NLB.DNSName
-        EvaluateTargetHealth: false
+  # api-int is NOT managed here. The NLB hairpin workaround in
+  # phase2_cloudformation.yml creates it as a simple A → CP private IPs.
+  # Managing it in CFN causes type collisions on re-deploy (alias vs simple-A).
 
   WildcardAppsDNSRecord:
     Type: AWS::Route53::RecordSet

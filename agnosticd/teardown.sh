@@ -263,6 +263,26 @@ destroy_student_tna() {
     --region "$AWS_REGION" --stack-name "$stack_name" 2>/dev/null || \
     warn "Stack $stack_name deletion wait timed out"
 
+  # Clean up api-int hairpin record (not CFN-owned after overwrite)
+  local hosted_zone_id
+  hosted_zone_id="$(aws route53 list-hosted-zones \
+    --query "HostedZones[?Name=='${BASE_DOMAIN}.'].Id" \
+    --output text 2>/dev/null | sed 's|/hostedzone/||' || true)"
+  if [[ -n "$hosted_zone_id" && "$hosted_zone_id" != "None" ]]; then
+    local api_int_json
+    api_int_json="$(aws route53 list-resource-record-sets --hosted-zone-id "$hosted_zone_id" \
+      --query "ResourceRecordSets[?Name=='api-int.${guid}.${BASE_DOMAIN}.']" \
+      --output json 2>/dev/null || true)"
+    if [[ -n "$api_int_json" && "$api_int_json" != "[]" ]]; then
+      local record
+      record="$(echo "$api_int_json" | python3 -c 'import json,sys; r=json.load(sys.stdin)[0]; print(json.dumps({"Changes":[{"Action":"DELETE","ResourceRecordSet":r}]}))')"
+      aws route53 change-resource-record-sets --hosted-zone-id "$hosted_zone_id" \
+        --change-batch "$record" >/dev/null 2>&1 || \
+        warn "Could not delete api-int record for $guid"
+      info "Deleted api-int.$guid.$BASE_DOMAIN"
+    fi
+  fi
+
   # Clean up local assets
   local output_dir="${AGNOSTICD_ROOT}/../agnosticd-v2-output/${guid}"
   if [[ -d "$output_dir" ]]; then
