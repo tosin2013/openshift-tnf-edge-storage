@@ -107,6 +107,13 @@
       tags: [phase7]
   tags: [phase7]
 
+- name: "Phase 7b — OpenShift GitOps and Virtualization"
+  ansible.builtin.include_tasks:
+    file: phase7b_operators.yml
+    apply:
+      tags: [phase7b, gitops, cnv]
+  tags: [phase7b, gitops, cnv]
+
 - name: "Phase 8 — Readiness check and deployment info"
   ansible.builtin.include_tasks:
     file: phase8_readiness.yml

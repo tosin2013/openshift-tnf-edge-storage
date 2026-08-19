@@ -17,3 +17,4 @@ asciidoc:
     ssh_user: "lab-user"
     linbit_namespace: "linbit-sds"
     workshop_namespace: "linbit-workshop"
+    linstor_encryption_passphrase: "CHANGE_ME"

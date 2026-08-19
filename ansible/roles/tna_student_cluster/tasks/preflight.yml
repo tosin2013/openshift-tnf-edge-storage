@@ -90,5 +90,30 @@
       ansible.builtin.set_fact:
         tna_linbit_registry_username: "{{ _agd_secrets.linbit_registry_username | default('') }}"
         tna_linbit_registry_password: "{{ _agd_secrets.linbit_registry_password | default('') }}"
+        tna_linstor_encryption_passphrase: >-
+          {{ tna_linstor_encryption_passphrase
+             if (tna_linstor_encryption_passphrase | length > 0)
+             else (_agd_secrets.linstor_encryption_passphrase | default('')) }}
       when: _secrets_stat.stat.exists and _agd_secrets is defined
+      no_log: true
+
+- name: Load LINSTOR encryption passphrase from secrets when still empty
+  when: tna_linstor_encryption_passphrase | length == 0
+  block:
+    - name: Check secrets file exists for passphrase
+      ansible.builtin.stat:
+        path: "{{ tna_secrets_file }}"
+      register: _passphrase_secrets_stat
+
+    - name: Read secrets file for passphrase
+      ansible.builtin.include_vars:
+        file: "{{ tna_secrets_file }}"
+        name: _agd_passphrase_secrets
+      when: _passphrase_secrets_stat.stat.exists
+      no_log: true
+
+    - name: Set LINSTOR encryption passphrase from secrets
+      ansible.builtin.set_fact:
+        tna_linstor_encryption_passphrase: "{{ _agd_passphrase_secrets.linstor_encryption_passphrase | default('') }}"
+      when: _passphrase_secrets_stat.stat.exists and _agd_passphrase_secrets is defined
       no_log: true

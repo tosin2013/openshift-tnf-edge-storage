@@ -91,7 +91,7 @@ You get a 3-node TNA cluster (2 CP + 1 arbiter) with `mastersSchedulable: true` 
 ### Resume from a specific phase after failure
 
 ```bash
-make deploy-student GUID=linbit-s1 BASE_DOMAIN=sandbox3493.opentlc.com TAGS=preflight,phase2,phase5b,phase6,phase7,phase8
+make deploy-student GUID=linbit-s1 BASE_DOMAIN=sandbox3493.opentlc.com TAGS=preflight,phase2,phase5b,phase6,phase7,phase7b,phase8
 ```
 
 **Important:** When resuming, always include `preflight` and `phase2` tags. Preflight loads secrets and SSH keys; Phase 2 detects the existing CloudFormation stack and re-extracts outputs (instance IDs, IPs) into facts. Without these, later phases fail on undefined variables.
@@ -251,7 +251,24 @@ This is the critical phase that works around EC2's fixed boot order. See [EC2 Vo
 - Sets encryption passphrase
 - Applies StorageClasses
 
-**Skipped if** `tna_linbit_registry_username` is empty (no LINBIT credentials). See [Using Without LINSTOR](../docs/architecture/ec2-volume-swap.md#using-without-linstor).
+**Skipped if** `tna_linbit_registry_username` is empty (no LINBIT credentials), **or** `tna_linstor_install_method=helm` (default `make deploy` path — Field Content / ArgoCD owns LINSTOR so this phase does not double-install). See [LINBIT registry credentials — Phase 7 skip](../docs/setup/linbit-registry-credentials.md#phase-7-missing-credential-skip-make-deploy-student).
+
+The encryption passphrase is read from AgnosticD `secrets.yml` (`linstor_encryption_passphrase`). `bootstrap.sh` generates one if missing. It is not committed to git.
+
+### Phase 7b — GitOps and Virtualization (tags: `phase7b`, `gitops`, `cnv`)
+
+**File:** `tasks/phase7b_operators.yml`
+**Duration:** ~5-15 min
+**What it does:**
+- Installs OpenShift GitOps (ArgoCD) via OLM Subscription and waits for the CSV + `openshift-gitops-server` Deployment
+- Installs OpenShift Virtualization (CNV), waits for the CSV, applies `HyperConverged`
+- Sets `spec.kVMEmulation` from `tna_enabled_nested_kvm` (`true` on AWS `standard`, `false` on `virt-enabled` / metal)
+
+**If it fails:** Check OperatorHub (`redhat-operators`) and CSV status in `openshift-operators` / `openshift-cnv`. Re-run with `TAGS=preflight,phase2,phase7b`.
+
+Idempotent: safe to re-run; Subscriptions and HyperConverged are `state: present`.
+
+`make deploy` installs GitOps/CNV here and does **not** re-install them in `deploy_student_workloads` (that step is cert-manager + Field Content only).
 
 ### Phase 8 — Readiness (tag: `phase8`)
 

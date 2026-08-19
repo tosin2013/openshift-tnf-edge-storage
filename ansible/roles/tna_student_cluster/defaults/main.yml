@@ -57,7 +57,19 @@ tna_owner: "tosin@redhat.com"
 tna_linstor_namespace: linbit-sds
 tna_linstor_operator_channel: stable-v2
 tna_linstor_storage_device: /dev/nvme1n1
-tna_linstor_encryption_passphrase: workshop-lab-2024
+# Loaded from AgnosticD secrets.yml (linstor_encryption_passphrase). Empty default
+# on purpose — do not commit a workshop password. bootstrap.sh generates one.
+tna_linstor_encryption_passphrase: ""
+# ansible = this role installs LINSTOR (make deploy-student).
+# helm    = skip Phase 7 operator/CRs; Field Content / ArgoCD owns SDS (make deploy).
+tna_linstor_install_method: ansible
+
+# OpenShift GitOps + Virtualization (Module 3 / Field Content)
+tna_install_gitops: true
+tna_install_cnv: true
+# true  = standard profile (m7a.4xlarge, nested KVM emulation)
+# false = virt-enabled / metal (real /dev/kvm)
+tna_enabled_nested_kvm: true
 
 # LINBIT registry credentials (loaded from secrets file or extra-vars)
 tna_linbit_registry_username: ""

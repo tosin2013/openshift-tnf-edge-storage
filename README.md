@@ -2,6 +2,8 @@
 
 Showroom-based hands-on workshop for high-performance persistent storage with **LINBIT SDS (LINSTOR + DRBD)** on **OpenShift 4.22+**, focused on edge and minimal-footprint topologies.
 
+This project is licensed under the [Apache License 2.0](LICENSE).
+
 ## Platform requirement
 
 **OpenShift 4.22 and newer only.** Older 4.x minors are out of scope.
@@ -22,6 +24,8 @@ This repository is a **field-sourced-content** Helm chart deployed by ArgoCD ont
 | **KVM / bare metal (optional)** | TNF (2 nodes + Redfish STONITH) | [openshift-agent-install](https://github.com/tosin2013/openshift-agent-install) ABI | Local/virtio disks + fencing | Advanced; documented but not primary |
 
 TNF is **not** supported on AWS EC2 (no tenant BMC/Redfish).
+
+Legacy 6-node AWS IPI is fallback only: `STUDENT_DEPLOY_METHOD=ipi make deploy`.
 
 ## Workshop modules (Showroom)
 

@@ -50,6 +50,15 @@ make setup
 
 If credentials are already set, setup offers to keep or update them. Non-interactive runs (`--non-interactive`) do not prompt; edit the file manually or re-run setup interactively.
 
+### Local `make deploy` vs RHDP catalog
+
+| Path | Where credentials live | Who injects them |
+|------|------------------------|------------------|
+| **Local / sandbox** (`make setup`, `make deploy`) | AgnosticD `secrets.yml` on the deployer host (`linbit_registry_username` / `linbit_registry_password`). Never `agnosticd/config.yml`, never git. | `deploy.sh` preflight hard-fails on placeholders. Agent path passes them into Field Content Helm values (`drbdiocred`). Ansible Phase 7 reads the same file if it is installing LINSTOR itself. |
+| **RHDP catalog** | Catalog / AgnosticD secrets for the catalog item (same variable names). Students never see the portal password. | Field Content workload on the student cluster creates `drbdiocred` from those secrets. Do not put credentials in Helm values committed to this repo. |
+
+Both paths use the in-cluster pull secret `drbdiocred` in `linbit-sds`. Do not commit real passwords.
+
 ### Manual edit
 
 Default path:
@@ -70,6 +79,18 @@ make check
 ```
 
 `make deploy` / `./agnosticd/deploy.sh` **hard-fail** if these values are missing or still look like placeholders. See `onboard.yml` validation and the preflight in `agnosticd/deploy.sh`.
+
+## Phase 7 missing-credential skip (`make deploy-student`)
+
+Standalone Ansible (`make deploy-student` / `tna_student_cluster` Phase 7) **does not** hard-fail when portal credentials are empty. It sets `_linstor_skip` and continues:
+
+- You still get a 3-node TNA cluster (labels, taints, GitOps, CNV).
+- LINSTOR Operator, `drbdiocred`, StorageClasses, and the encryption passphrase are **not** applied.
+- The default `make deploy` path skips Ansible Phase 7 LINSTOR on purpose (`tna_linstor_install_method=helm`) and installs SDS via ArgoCD instead. Missing creds there still hard-fail in `deploy.sh` before provision starts.
+
+This skip is for developers who want a bare TNA cluster or who will apply Field Content later. It is not a substitute for filling in `secrets.yml` before a workshop.
+
+See [Developer Guide — Using without LINSTOR](../../ansible/DEVELOPER-GUIDE.md).
 
 ### Verify against the registry (recommended)
 

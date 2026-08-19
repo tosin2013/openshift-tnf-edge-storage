@@ -7,8 +7,8 @@
 # Deploy methods:
 #   agent-based (default): True TNA via CloudFormation + agent-based
 #     installer. 3 nodes total (2 CP + 1 arbiter).
-#   ipi (legacy): AWS IPI via AgnosticD. 6 nodes (3 CP + 3 workers).
-#     ~$85/day. Set STUDENT_DEPLOY_METHOD=ipi to use.
+#   ipi (legacy fallback only): AWS IPI via AgnosticD. 6 nodes (3 CP + 3 workers).
+#     ~$85/day. Set STUDENT_DEPLOY_METHOD=ipi. Prefer agent-based (default).
 #
 # Instance profiles (set via STUDENT_INSTANCE_PROFILE or config.yml):
 #   standard (default):  m7a.4xlarge CP — ~$52/day/student

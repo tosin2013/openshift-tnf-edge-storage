@@ -724,13 +724,17 @@ SECRETS_FILE="${SECRETS_FILE:-$HOME/Development/agnosticd-v2-secrets/secrets.yml
 if [[ -f "$SECRETS_FILE" ]]; then
   LINBIT_USER="$(grep 'linbit_registry_username' "$SECRETS_FILE" | awk '{print $2}' | tr -d '"')"
   LINBIT_PASS="$(grep 'linbit_registry_password' "$SECRETS_FILE" | awk '{print $2}' | tr -d '"')"
+  LINSTOR_PASSPHRASE="$(python3 -c "import yaml,sys; d=yaml.safe_load(open(sys.argv[1])) or {}; print((d.get('linstor_encryption_passphrase') or '').strip())" "$SECRETS_FILE")"
 else
   warn "Secrets file not found at $SECRETS_FILE"
   LINBIT_USER="${LINBIT_REGISTRY_USERNAME:-}"
   LINBIT_PASS="${LINBIT_REGISTRY_PASSWORD:-}"
+  LINSTOR_PASSPHRASE="${LINSTOR_ENCRYPTION_PASSPHRASE:-}"
 fi
 
-if [[ -z "$LINBIT_USER" || -z "$LINBIT_PASS" ]]; then
+if [[ "${TNA_LINSTOR_INSTALL_METHOD:-ansible}" == "helm" ]]; then
+  info "Skipping Ansible LINSTOR (TNA_LINSTOR_INSTALL_METHOD=helm — Field Content owns SDS)."
+elif [[ -z "$LINBIT_USER" || -z "$LINBIT_PASS" ]]; then
   warn "LINBIT registry credentials not available — skipping LINSTOR install."
   warn "Set LINBIT_REGISTRY_USERNAME/LINBIT_REGISTRY_PASSWORD or provide secrets.yml"
 else
@@ -938,10 +942,15 @@ EOF
       lvchange -ay linstor_lvm-thin/lvm-thin 2>/dev/null || true
   done
 
-  # Set encryption passphrase (needed for S3 backup remotes)
-  info "Setting LINSTOR encryption passphrase ..."
-  oc exec -n linbit-sds deploy/linstor-controller -- \
-    linstor encryption create-passphrase --passphrase workshop-lab-2024 2>/dev/null || true
+  # Set encryption passphrase (needed for S3 backup remotes). Value comes from
+  # secrets.yml linstor_encryption_passphrase — never a committed default.
+  if [[ -n "${LINSTOR_PASSPHRASE:-}" ]]; then
+    info "Setting LINSTOR encryption passphrase ..."
+    oc exec -n linbit-sds deploy/linstor-controller -- \
+      linstor encryption create-passphrase --passphrase "${LINSTOR_PASSPHRASE}" 2>/dev/null || true
+  else
+    warn "linstor_encryption_passphrase empty — Module 5 must create one in-cluster."
+  fi
 
   ok "LINSTOR storage stack fully configured."
 fi

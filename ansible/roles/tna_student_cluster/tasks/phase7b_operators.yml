@@ -1,0 +1,115 @@
+---
+# Phase 7b: OpenShift GitOps + OpenShift Virtualization
+# Idempotent OLM install. Nested KVM via tna_enabled_nested_kvm
+# (standard=true, virt-enabled/metal=false).
+
+- name: Install OpenShift GitOps operator
+  when: tna_install_gitops | bool
+  block:
+    - name: Apply OpenShift GitOps operator Subscription
+      kubernetes.core.k8s:
+        kubeconfig: "{{ _kubeconfig }}"
+        state: present
+        definition:
+          apiVersion: operators.coreos.com/v1alpha1
+          kind: Subscription
+          metadata:
+            name: openshift-gitops-operator
+            namespace: openshift-operators
+          spec:
+            channel: latest
+            name: openshift-gitops-operator
+            source: redhat-operators
+            sourceNamespace: openshift-marketplace
+            installPlanApproval: Automatic
+
+    - name: Wait for OpenShift GitOps CSV to succeed
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ _kubeconfig }}"
+        api_version: operators.coreos.com/v1alpha1
+        kind: ClusterServiceVersion
+        namespace: openshift-operators
+        label_selectors:
+          - operators.coreos.com/openshift-gitops-operator.openshift-operators
+      register: _gitops_csv
+      until: >-
+        _gitops_csv.resources | length > 0
+        and (_gitops_csv.resources | map(attribute='status.phase') | select('eq', 'Succeeded') | list | length > 0)
+      retries: "{{ (tna_csv_timeout / 10) | int }}"
+      delay: 10
+
+    - name: Wait for Argo CD server deployment
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ _kubeconfig }}"
+        kind: Deployment
+        namespace: openshift-gitops
+        name: openshift-gitops-server
+      register: _gitops_deploy
+      until: >-
+        _gitops_deploy.resources | length > 0
+        and (_gitops_deploy.resources[0].status.availableReplicas | default(0) | int) >= 1
+      retries: "{{ (tna_csv_timeout / 10) | int }}"
+      delay: 10
+
+- name: Install OpenShift Virtualization
+  when: tna_install_cnv | bool
+  block:
+    - name: Create openshift-cnv namespace
+      kubernetes.core.k8s:
+        kubeconfig: "{{ _kubeconfig }}"
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: openshift-cnv
+
+    - name: Apply OpenShift Virtualization OperatorGroup
+      kubernetes.core.k8s:
+        kubeconfig: "{{ _kubeconfig }}"
+        state: present
+        definition:
+          apiVersion: operators.coreos.com/v1
+          kind: OperatorGroup
+          metadata:
+            name: kubevirt-hyperconverged-group
+            namespace: openshift-cnv
+          spec:
+            targetNamespaces:
+              - openshift-cnv
+
+    - name: Apply OpenShift Virtualization Subscription
+      kubernetes.core.k8s:
+        kubeconfig: "{{ _kubeconfig }}"
+        state: present
+        definition:
+          apiVersion: operators.coreos.com/v1alpha1
+          kind: Subscription
+          metadata:
+            name: kubevirt-hyperconverged
+            namespace: openshift-cnv
+          spec:
+            channel: stable
+            name: kubevirt-hyperconverged
+            source: redhat-operators
+            sourceNamespace: openshift-marketplace
+            installPlanApproval: Automatic
+
+    - name: Wait for OpenShift Virtualization CSV to succeed
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ _kubeconfig }}"
+        api_version: operators.coreos.com/v1alpha1
+        kind: ClusterServiceVersion
+        namespace: openshift-cnv
+      register: _cnv_csv
+      until: >-
+        _cnv_csv.resources | length > 0
+        and (_cnv_csv.resources | map(attribute='status.phase') | select('eq', 'Succeeded') | list | length > 0)
+      retries: "{{ ((tna_csv_timeout | int) * 2 / 10) | int }}"
+      delay: 10
+
+    - name: Apply HyperConverged CR
+      kubernetes.core.k8s:
+        kubeconfig: "{{ _kubeconfig }}"
+        state: present
+        template: hyperconverged.yml.j2

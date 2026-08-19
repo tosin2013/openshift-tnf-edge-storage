@@ -101,7 +101,8 @@ Primary workflow in that project: **KVM development → fork & adapt → bare me
 
 - Two diskful DRBD replicas on the two nodes  
 - Hardware fencing replaces a third etcd/storage voter for control-plane HA  
-- Keep LINBIT footprint small (controller/satellites ~700 MiB class) so edge RAM stays available for apps  
+- Keep LINBIT footprint small (controller/satellites ~700 MiB class) so edge RAM stays available for apps
+- MinIO (optional S3 for Module 5 when AWS S3 is unavailable): do **not** commit access keys. Create Secret `minio-root` in `linbit-workshop` (`accesskey` / `secretkey` literals) and leave `helm/values-tnf.yaml` pointing at `existingSecret: minio-root`.  
 
 ### Provisioning flow
 

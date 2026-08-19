@@ -5,7 +5,7 @@
   "board_level": "full",
   "release_strategy": "milestone-based",
   "created_at": "2026-08-18",
-  "last_operational_run": "2026-08-18",
+  "last_operational_run": "2026-08-19",
   "release_gates": [
     {
       "id": "onboard-e2e-deploy",

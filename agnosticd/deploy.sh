@@ -318,6 +318,62 @@ inject_hub_credentials() {
   echo "$student_vars_file"
 }
 
+# Wait for Field Content parent + child ArgoCD Applications (helm/templates/applications.yaml)
+wait_field_content_apps() {
+  local kubeconfig="$1"
+  local ns="openshift-gitops"
+  local apps=(
+    field-content
+    field-content-linstor-operator
+    field-content-storageclasses
+    field-content-sample-database
+    field-content-sample-vm
+    field-content-userinfo
+  )
+  echo "    Waiting for ArgoCD Applications to become Healthy..."
+  local i healthy app status
+  for i in $(seq 1 90); do
+    healthy=0
+    for app in "${apps[@]}"; do
+      status="$(KUBECONFIG="$kubeconfig" oc get application "$app" -n "$ns" \
+        -o jsonpath='{.status.health.status}' 2>/dev/null || true)"
+      [[ "$status" == "Healthy" ]] && healthy=$((healthy + 1))
+    done
+    if (( healthy == ${#apps[@]} )); then
+      echo "    All Field Content Applications are Healthy."
+      return 0
+    fi
+    sleep 20
+  done
+  echo "WARN: Timed out waiting for ArgoCD Applications (Healthy=${healthy}/${#apps[@]})."
+  KUBECONFIG="$kubeconfig" oc get applications -n "$ns" \
+    -o custom-columns='NAME:.metadata.name,SYNC:.status.sync.status,HEALTH:.status.health.status' 2>/dev/null || true
+  return 0
+}
+
+apply_linstor_passphrase() {
+  local kubeconfig="$1"
+  local pass
+  pass="$(python3 -c "import yaml,sys; d=yaml.safe_load(open(sys.argv[1])) or {}; print((d.get('linstor_encryption_passphrase') or '').strip())" "$SECRETS_YML")"
+  if [[ -z "$pass" ]]; then
+    echo "WARN: linstor_encryption_passphrase missing from secrets.yml — skip Module 5 pre-seed."
+    return 0
+  fi
+  echo "    Applying LINSTOR encryption passphrase on the student cluster..."
+  local i
+  for i in $(seq 1 60); do
+    if KUBECONFIG="$kubeconfig" oc get deploy linstor-controller -n linbit-sds &>/dev/null; then
+      KUBECONFIG="$kubeconfig" oc wait --for=condition=available \
+        deploy/linstor-controller -n linbit-sds --timeout=120s >/dev/null 2>&1 || true
+      KUBECONFIG="$kubeconfig" oc exec -n linbit-sds deploy/linstor-controller -- \
+        linstor encryption create-passphrase --passphrase "$pass" >/dev/null 2>&1 || true
+      return 0
+    fi
+    sleep 10
+  done
+  echo "WARN: linstor-controller not ready; passphrase not applied."
+}
+
 > "$MANIFEST"
 
 deploy_student_ipi() {
@@ -347,13 +403,17 @@ deploy_student_agent() {
 
   local ansible_dir="${REPO_ROOT}/ansible"
   if [[ "${USE_ANSIBLE:-true}" == "true" && -f "${ansible_dir}/playbooks/deploy-tna-student.yml" ]]; then
+    local nested_kvm="true"
+    [[ "$STUDENT_INSTANCE_PROFILE" == "virt-enabled" ]] && nested_kvm="false"
     ANSIBLE_CONFIG="${ansible_dir}/ansible.cfg" ansible-playbook \
       "${ansible_dir}/playbooks/deploy-tna-student.yml" \
       -e tna_guid="$guid" \
       -e tna_base_domain="${BASE_DOMAIN}" \
       -e tna_aws_region="${AWS_REGION:-us-east-2}" \
       -e tna_owner="${OWNER:-tosin@redhat.com}" \
-      -e tna_cp_instance_type="${CP_INSTANCE_TYPE}"
+      -e tna_cp_instance_type="${CP_INSTANCE_TYPE}" \
+      -e tna_enabled_nested_kvm="${nested_kvm}" \
+      -e tna_linstor_install_method=helm
   else
     "$SCRIPT_DIR/deploy-tna.sh" \
       --guid "$guid" \
@@ -404,8 +464,9 @@ deploy_student_workloads() {
   echo "    HostedZoneID: $hosted_zone_id"
 
   local wl_vars="${AGNOSTICD_VARS}/linbit-student-${student_num}-workloads.yml"
-  local nested_kvm="true"
-  [[ "$STUDENT_INSTANCE_PROFILE" == "virt-enabled" ]] && nested_kvm="false"
+  local linbit_user linbit_pass
+  linbit_user="$(python3 -c "import yaml,sys; d=yaml.safe_load(open(sys.argv[1])) or {}; print((d.get('linbit_registry_username') or '').strip())" "$SECRETS_YML")"
+  linbit_pass="$(python3 -c "import yaml,sys; d=yaml.safe_load(open(sys.argv[1])) or {}; print((d.get('linbit_registry_password') or '').strip())" "$SECRETS_YML")"
 
   inject_hub_credentials "$student_num" > /dev/null
 
@@ -430,8 +491,7 @@ openshift_api_key: "${api_token}"
 
 workloads:
   - agnosticd.core_workloads.ocp4_workload_cert_manager
-  - agnosticd.core_workloads.ocp4_workload_openshift_gitops
-  - agnosticd.core_workloads.ocp4_workload_openshift_virtualization
+  - agnosticd.core_workloads.ocp4_workload_field_content
 
 ocp4_workload_cert_manager_channel: stable-v1
 ocp4_workload_cert_manager_aws_hostedzoneid: "${hosted_zone_id}"
@@ -442,14 +502,21 @@ ocp4_workload_cert_manager_use_catalog_snapshot: false
 ocp4_workload_cert_manager_install_ingress_certificates: true
 ocp4_workload_cert_manager_install_api_certificates: false
 
-ocp4_workload_openshift_gitops_channel: latest
-ocp4_workload_openshift_gitops_setup_cluster_admin: true
-ocp4_workload_openshift_gitops_enable_route: true
-
-ocp4_workload_openshift_virtualization_channel: stable
-ocp4_workload_openshift_virtualization_enabled_nested_kvm: ${nested_kvm}
-ocp4_workload_openshift_virtualization_deploy_hyperconverged: true
-ocp4_workload_openshift_virtualization_install_virtctl: true
+# GitOps + CNV are installed by ansible/roles/tna_student_cluster phase 7b.
+# Field Content deploys helm/ via ArgoCD (linstor-operator, SCs, sample-db/vm, userinfo).
+ocp4_workload_field_content_gitops_repo_url: "https://github.com/tosin2013/openshift-tnf-edge-storage.git"
+ocp4_workload_field_content_gitops_repo_path: "helm"
+ocp4_workload_field_content_gitops_repo_revision: "main"
+ocp4_workload_field_content_namespace: openshift-gitops
+ocp4_workload_field_content_helm_values:
+  components:
+    linstorOperator:
+      registrySecret:
+        create: true
+        name: drbdiocred
+        server: drbd.io
+        username: "${linbit_user}"
+        password: "${linbit_pass}"
 WLEOF
 
   echo "    Vars: $wl_vars"
@@ -461,6 +528,8 @@ WLEOF
     -a "$ACCOUNT"
 
   echo "==> Workloads deployed on $guid."
+  wait_field_content_apps "$student_kc"
+  apply_linstor_passphrase "$student_kc"
 }
 
 deploy_student() {
@@ -557,6 +626,10 @@ deploy_student_showroom() {
   fi
   student_ingress_domain="$(echo "$student_api_url" | sed 's|https://api\.|apps.|; s|:6443||')"
 
+  local linstor_pass
+  linstor_pass="$(python3 -c "import yaml,sys; d=yaml.safe_load(open(sys.argv[1])) or {}; print((d.get('linstor_encryption_passphrase') or '').strip())" "$SECRETS_YML" 2>/dev/null || true)"
+  [[ -n "$linstor_pass" ]] || linstor_pass="CHANGE_ME"
+
   echo "==> Student $student_num Showroom (ns=$ns)"
   echo "    API:     $student_api_url"
   echo "    Ingress: $student_ingress_domain"
@@ -586,6 +659,7 @@ data:
     "openshift_console_url": "https://console-openshift-console.${student_ingress_domain}"
     "openshift_cluster_console_url": "https://console-openshift-console.${student_ingress_domain}"
     "bastion_ssh_user_name": "lab-user"
+    "linstor_encryption_passphrase": "${linstor_pass}"
 UDEOF
 
   # --- ConfigMap: showroom-proxy-config (nginx reverse proxy) ---

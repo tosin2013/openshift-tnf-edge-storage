@@ -710,6 +710,22 @@ with open(path, 'w') as f:
 " "$secrets_yml" "$user" "$pass"
 }
 
+_ensure_linstor_passphrase() {
+    local secrets_yml
+    secrets_yml="$1"
+    python3 -c "
+import os, secrets, yaml, sys
+path = sys.argv[1]
+d = yaml.safe_load(open(path)) or {}
+cur = (d.get('linstor_encryption_passphrase') or '').strip()
+if cur and not cur.startswith('<') and cur.lower() not in ('change_me', 'changeme', 'workshop-lab-2024'):
+    sys.exit(0)
+d['linstor_encryption_passphrase'] = secrets.token_urlsafe(18)
+with open(path, 'w') as f:
+    yaml.safe_dump(d, f, default_flow_style=False, sort_keys=False)
+" "$secrets_yml"
+}
+
 assist_linbit_registry() {
     local secrets_yml user pass reply cur_user cur_pass
     secrets_yml="${VARS[agnosticd_root]:-}/../agnosticd-v2-secrets/secrets.yml"
@@ -790,6 +806,15 @@ assist_secrets() {
 
     assist_pull_secret
     assist_linbit_registry
+
+    local _pass_yml
+    _pass_yml="${VARS[agnosticd_root]:-}/../agnosticd-v2-secrets/secrets.yml"
+    _pass_yml="${_pass_yml/#\~/$HOME}"
+    if [[ -f "$_pass_yml" ]]; then
+        if _ensure_linstor_passphrase "$_pass_yml"; then
+            ok "linstor_encryption_passphrase present in secrets.yml (not printed)"
+        fi
+    fi
 
     if [[ -z "$path" ]]; then
         warn_msg "Cannot resolve account secrets path (account / agnosticd_root unset)."

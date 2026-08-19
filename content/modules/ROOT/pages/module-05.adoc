@@ -29,9 +29,9 @@ Create the passphrase (if this is the first time) or enter it (if it already exi
 [source,bash,role=execute,subs="attributes+"]
 ----
 oc exec -n {linbit_namespace} deploy/linstor-controller -- \
-  linstor encryption create-passphrase --passphrase workshop-lab-2024 2>&1 \
+  linstor encryption create-passphrase --passphrase {linstor_encryption_passphrase} 2>&1 \
   || oc exec -n {linbit_namespace} deploy/linstor-controller -- \
-  linstor encryption enter-passphrase --passphrase workshop-lab-2024
+  linstor encryption enter-passphrase --passphrase {linstor_encryption_passphrase}
 ----
 
 .Sample output (first time)

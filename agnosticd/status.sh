@@ -9,7 +9,23 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Read config.yml (same pattern as deploy.sh / credentials.sh / teardown.sh)
+CONFIG_FILE="${SCRIPT_DIR}/config.yml"
+if [[ -f "$CONFIG_FILE" ]]; then
+  while IFS=': ' read -r key value; do
+    key=$(echo "$key" | tr -d ' ')
+    value=$(echo "$value" | tr -d '"' | tr -d "'")
+    [[ "$key" =~ ^#.*$ || -z "$key" ]] && continue
+    upper_key=$(echo "$key" | tr '[:lower:]' '[:upper:]')
+    if [[ -z "${!upper_key:-}" ]]; then
+      export "$upper_key=$value"
+    fi
+  done < "$CONFIG_FILE"
+fi
+
 AGNOSTICD_ROOT="${AGNOSTICD_ROOT:-$HOME/Development/agnosticd-v2}"
+AGNOSTICD_ROOT="${AGNOSTICD_ROOT/#\~/$HOME}"
 AGNOSTICD_VARS="${AGNOSTICD_ROOT}/../agnosticd-v2-vars"
 ACCOUNT="${ACCOUNT:-sandbox2530}"
 

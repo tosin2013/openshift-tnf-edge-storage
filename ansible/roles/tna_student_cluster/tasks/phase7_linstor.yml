@@ -1,9 +1,12 @@
 ---
 # Phase 7: LINSTOR Operator + storage pools
+# Skipped when credentials are missing (_linstor_skip) or when
+# tna_linstor_install_method=helm (Field Content / ArgoCD owns SDS).
 
 - name: Check LINBIT registry credentials
   ansible.builtin.set_fact:
     _linstor_skip: "{{ (tna_linbit_registry_username | length == 0) or (tna_linbit_registry_password | length == 0) }}"
+    _linstor_via_helm: "{{ tna_linstor_install_method | default('ansible') == 'helm' }}"
 
 - name: Warn if LINBIT credentials are missing
   ansible.builtin.debug:
@@ -12,8 +15,17 @@
       Set tna_linbit_registry_username/tna_linbit_registry_password or provide secrets.yml
   when: _linstor_skip | bool
 
+- name: Skip Ansible LINSTOR when Helm / Field Content owns it
+  ansible.builtin.debug:
+    msg: >-
+      tna_linstor_install_method=helm — skipping Phase 7 operator/CRs/StorageClasses
+      so ArgoCD Field Content can install LINSTOR without a double-install.
+  when: _linstor_via_helm | bool
+
 - name: Install and configure LINSTOR
-  when: not (_linstor_skip | bool)
+  when:
+    - not (_linstor_skip | bool)
+    - not (_linstor_via_helm | bool)
   block:
     - name: Create linbit-sds namespace
       kubernetes.core.k8s:
@@ -117,3 +129,5 @@
         KUBECONFIG: "{{ _kubeconfig }}"
       changed_when: true
       ignore_errors: true
+      no_log: true
+      when: tna_linstor_encryption_passphrase | length > 0

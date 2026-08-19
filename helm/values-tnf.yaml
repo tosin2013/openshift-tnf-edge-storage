@@ -1,6 +1,15 @@
 # KVM / Bare-metal TNF overrides
 # Single-user only. No hub, no RHACM.
 # Apply with: helm template . -f values.yaml -f values-tnf.yaml
+#
+# MinIO credentials are NOT in this file. Create the Secret out of band:
+#
+#   oc create namespace linbit-workshop
+#   oc create secret generic minio-root -n linbit-workshop \
+#     --from-literal=accesskey='<generated>' \
+#     --from-literal=secretkey='<generated>'
+#
+# Then point the TNF MinIO chart/manifest at existingSecret: minio-root.
 
 components:
 
@@ -11,11 +20,8 @@ components:
         - /dev/vdb
       providerType: "LVM_THIN"
 
-  # MinIO provides S3-compatible endpoint for DR snapshots
-  # when real AWS S3 is not available (KVM/bare-metal)
   minio:
     enabled: true
     namespace: linbit-workshop
-    accessKey: minioadmin
-    secretKey: minioadmin
+    existingSecret: minio-root
     bucketName: workshop-backups

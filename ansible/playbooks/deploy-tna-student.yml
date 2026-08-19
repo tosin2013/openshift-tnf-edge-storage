@@ -10,7 +10,7 @@
 #   ansible-playbook deploy-tna-student.yml \
 #     -e tna_guid=linbit-s1 \
 #     -e tna_base_domain=sandbox3493.opentlc.com \
-#     --tags phase5b,phase6,phase7,phase8
+#     --tags phase5b,phase6,phase7,phase7b,phase8
 #
 #   # Via ansible-navigator:
 #   ansible-navigator run deploy-tna-student.yml \
