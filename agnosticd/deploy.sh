@@ -344,7 +344,7 @@ wait_field_content_apps() {
         -o jsonpath='{.status.health.status}' 2>/dev/null || true)"
       sync="$(KUBECONFIG="$kubeconfig" oc get application "$app" -n "$ns" \
         -o jsonpath='{.status.sync.status}' 2>/dev/null || true)"
-      [[ "$status" == "Healthy" && "$sync" == "Synced" ]] && healthy=$((healthy + 1))
+      [[ "$sync" == "Synced" && ( "$status" == "Healthy" || "$status" == "Suspended" ) ]] && healthy=$((healthy + 1))
     done
     if (( healthy == ${#apps[@]} )); then
       echo "    All Field Content Applications are Healthy."
