@@ -51,7 +51,7 @@ First, find where the database pod is running:
 
 [source,bash,role=execute,subs="attributes+"]
 ----
-DB_NODE=$(oc get pod -n {workshop_namespace} -l app=sample-db -o jsonpath='{.items[0].spec.nodeName}')
+export DB_NODE=$(oc get pod -n {workshop_namespace} -l app=sample-db -o jsonpath='{.items[0].spec.nodeName}')
 echo "Database is on: ${DB_NODE}"
 ----
 
@@ -61,8 +61,8 @@ The node with an `lvm-thin` pool that is *not* hosting the database is our targe
 [source,bash,role=execute,subs="attributes+"]
 ----
 export CORDON_NODE=$(oc exec -n {linbit_namespace} deploy/linstor-controller -- \
-  linstor storage-pool list -s lvm-thin -m 2>/dev/null | \
-  python3 -c "import sys,json; pools=json.load(sys.stdin); print([p['node_name'] for p in pools[0]['storage_pools'] if p['node_name'] != '${DB_NODE}'][0])")
+  linstor -m storage-pool list | \
+  python3 -c "import sys,json,os; db=os.environ['DB_NODE']; pools=json.load(sys.stdin)[0]; print(next(p['node_name'] for p in pools if p.get('storage_pool_name')=='lvm-thin' and p['node_name']!=db))")
 echo "Will cordon: ${CORDON_NODE}"
 ----
 
@@ -242,7 +242,7 @@ WARNING: This section requires a TNF cluster with configured Redfish/STONITH fen
 
 Examine the Pacemaker fencing resources:
 
-[source,bash,role=execute,subs="attributes+"]
+[source,bash,role=copypaste,subs="attributes+"]
 ----
 oc debug node/<your-node> -- chroot /host pcs stonith show
 ----
@@ -254,7 +254,7 @@ On bare metal, fencing targets the real BMC endpoint.
 
 Power off one node using the sushy API (KVM) or by cordoning (safe alternative):
 
-[source,bash,role=execute,subs="attributes+"]
+[source,bash,role=copypaste,subs="attributes+"]
 ----
 # Safe alternative -- cordon and drain
 oc adm cordon <your-second-node>
@@ -273,7 +273,7 @@ On a real TNF cluster with fencing enabled, Pacemaker would:
 
 Verify workloads are running on the surviving node, then restore:
 
-[source,bash,role=execute,subs="attributes+"]
+[source,bash,role=copypaste,subs="attributes+"]
 ----
 oc get pods -n {workshop_namespace} -o wide
 oc adm uncordon <your-second-node>

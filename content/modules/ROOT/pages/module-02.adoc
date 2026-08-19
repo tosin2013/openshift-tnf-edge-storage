@@ -13,11 +13,12 @@ Traditional CSI drivers bind a PVC as soon as it is created, which can place the
 LINSTOR's `WaitForFirstConsumer` binding mode delays provisioning until the pod is scheduled, ensuring the primary DRBD replica lives on the *same node* as the consumer.
 Reads go directly to local block storage -- no network hop.
 
-In this module you will deploy a PostgreSQL database, verify data locality, and use pgbench to measure the performance difference between local reads and synchronously replicated writes.
+In this module you will examine the PostgreSQL database (pre-deployed by Field Content on the agent path, or created below), verify data locality, and use pgbench to measure the performance difference between local reads and synchronously replicated writes.
 
 == Step 1: Deploy and Examine the PostgreSQL Database
 
-Deploy a PostgreSQL StatefulSet that uses the `linbit-rwo-locality` StorageClass:
+Apply the PostgreSQL StatefulSet that uses the `linbit-rwo-locality` StorageClass.
+If Field Content already created `sample-db`, this apply is idempotent as long as the spec matches (10Gi, PostgreSQL 15):
 
 [source,bash,role=execute,subs="attributes+"]
 ----
@@ -46,7 +47,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: postgres
-          image: registry.redhat.io/rhel9/postgresql-16:latest
+          image: registry.redhat.io/rhel9/postgresql-15:latest
           env:
             - name: POSTGRESQL_USER
               value: workshopuser
@@ -75,14 +76,12 @@ spec:
   volumeClaimTemplates:
     - metadata:
         name: data
-        labels:
-          app: sample-db
       spec:
         accessModes: ["ReadWriteOnce"]
         storageClassName: linbit-rwo-locality
         resources:
           requests:
-            storage: 5Gi
+            storage: 10Gi
 ---
 apiVersion: v1
 kind: Service
@@ -124,7 +123,7 @@ Confirm the PVC is bound:
 
 [source,bash,role=execute,subs="attributes+"]
 ----
-oc get pvc -n {workshop_namespace} -l app=sample-db
+oc get pvc data-sample-db-0 -n {workshop_namespace}
 ----
 
 .Expected output

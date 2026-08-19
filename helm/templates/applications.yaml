@@ -157,12 +157,18 @@ spec:
   destination:
     server: https://kubernetes.default.svc
     namespace: {{ .Values.components.sampleVm.namespace }}
+  ignoreDifferences:
+    - group: kubevirt.io
+      kind: VirtualMachine
+      jsonPointers:
+        - /spec/runStrategy
   syncPolicy:
     automated:
       prune: true
       selfHeal: true
     syncOptions:
       - CreateNamespace=true
+      - RespectIgnoreDifferences=true
 {{- end }}
 
 {{- if .Values.components.userinfo.enabled }}

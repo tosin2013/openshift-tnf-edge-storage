@@ -19,14 +19,19 @@ This module needs hardware-assisted virtualization (KVM on the nodes).
 
 *Optional* (skip and go to xref:module-04.adoc[Module 4]) *only* when *neither* of those is configured -- typically AWS `standard` (`m7a.4xlarge`). Those instances do not expose `/dev/kvm` and fail with `Insufficient devices.kubevirt.io/kvm`.
 
-*Check:*
+*Check:* software emulation (AWS `standard`) vs hardware KVM (`virt-enabled` / metal):
 
 [source,bash,role=execute,subs="attributes+"]
 ----
-oc get nodes -o custom-columns='NODE:.metadata.name,KVM:.status.capacity.devices\.kubevirt\.io/kvm,INSTANCE-TYPE:.metadata.labels.node\.kubernetes\.io/instance-type'
+echo "useEmulation=$(oc get kubevirt kubevirt-kubevirt-hyperconverged -n openshift-cnv -o jsonpath='{.spec.configuration.developerConfiguration.useEmulation}')"
+oc get nodes -o custom-columns='NODE:.metadata.name,KVM-CAPACITY:.status.capacity.devices\.kubevirt\.io/kvm,INSTANCE-TYPE:.metadata.labels.node\.kubernetes\.io/instance-type'
 ----
 
-Skip *only* if the KVM column is `<none>` or `0` on every node *and* you are not on metal or TNF.
+Skip live migration (continue to xref:module-04.adoc[Module 4]) when `useEmulation=true`.
+OpenShift Virtualization still advertises a large `KVM-CAPACITY` (for example `1k`) in that mode; those are not real `/dev/kvm` devices.
+On AWS `standard` (`m7a.4xlarge`) starting a VM fails with `Insufficient devices.kubevirt.io/kvm`.
+
+Only proceed with the rest of this module when `useEmulation` is empty/`false` *and* you are on `virt-enabled` metal or TNF.
 ====
 
 == Introduction

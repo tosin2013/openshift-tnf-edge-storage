@@ -31,18 +31,28 @@ spec:
       labels:
         app: sample-db
     spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: postgres
           image: {{ .Values.database.image }}
           env:
             - name: POSTGRESQL_USER
-              value: demo
+              value: {{ .Values.database.user | quote }}
             - name: POSTGRESQL_PASSWORD
-              value: demo
+              value: {{ .Values.database.password | quote }}
             - name: POSTGRESQL_DATABASE
-              value: workshop
+              value: {{ .Values.database.name | quote }}
+            - name: POSTGRESQL_ADMIN_PASSWORD
+              value: {{ .Values.database.adminPassword | quote }}
           ports:
             - containerPort: 5432
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           volumeMounts:
             - name: data
               mountPath: /var/lib/pgsql/data
