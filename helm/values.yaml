@@ -82,6 +82,7 @@ components:
 deployer:
   domain: ""
   apiUrl: ""
+  showroomUrl: ""
 
 fieldContent:
   deploymentType: "helm"

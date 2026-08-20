@@ -196,6 +196,8 @@ spec:
           message: {{ .Values.components.userinfo.message | quote }}
         deployer:
           domain: {{ .Values.deployer.domain | quote }}
+          apiUrl: {{ .Values.deployer.apiUrl | quote }}
+          showroomUrl: {{ .Values.deployer.showroomUrl | quote }}
   destination:
     server: https://kubernetes.default.svc
     namespace: {{ .Values.components.userinfo.namespace }}

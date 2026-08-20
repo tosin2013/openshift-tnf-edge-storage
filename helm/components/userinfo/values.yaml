@@ -5,3 +5,5 @@ userinfo:
 
 deployer:
   domain: ""
+  apiUrl: ""
+  showroomUrl: ""

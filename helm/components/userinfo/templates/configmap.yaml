@@ -9,6 +9,13 @@ data:
   title: {{ .Values.userinfo.title | quote }}
   msg: {{ .Values.userinfo.message | quote }}
   {{- if .Values.deployer.domain }}
-  sample_db_connection: "postgresql://demo:demo@sample-db.{{ .Values.userinfo.namespace }}.svc:5432/workshop"
+  openshift_cluster_ingress_domain: {{ .Values.deployer.domain | quote }}
   openshift_console_url: "https://console-openshift-console.{{ .Values.deployer.domain }}"
+  sample_db_connection: "postgresql://workshopuser:workshop123@sample-db.{{ .Values.userinfo.namespace }}.svc:5432/workshop"
+  {{- end }}
+  {{- if .Values.deployer.apiUrl }}
+  openshift_api_url: {{ .Values.deployer.apiUrl | quote }}
+  {{- end }}
+  {{- if .Values.deployer.showroomUrl }}
+  showroom_url: {{ .Values.deployer.showroomUrl | quote }}
   {{- end }}

@@ -516,6 +516,10 @@ ocp4_workload_field_content_gitops_repo_path: "helm"
 ocp4_workload_field_content_gitops_repo_revision: "main"
 ocp4_workload_field_content_namespace: openshift-gitops
 ocp4_workload_field_content_helm_values:
+  deployer:
+    domain: "apps.${guid}.${base_domain}"
+    apiUrl: "${api_url}"
+    showroomUrl: "https://showroom-showroom-student-${student_num}.apps.${HUB_GUID}.${HUB_GUID}.${base_domain}"
   components:
     linstorOperator:
       registrySecret:
