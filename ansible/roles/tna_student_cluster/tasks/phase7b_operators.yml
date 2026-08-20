@@ -163,3 +163,43 @@
       until: _hco is succeeded
       retries: 12
       delay: 10
+
+    - name: Wait for HCO to report Available
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ _kubeconfig }}"
+        api_version: hco.kubevirt.io/v1beta1
+        kind: HyperConverged
+        name: kubevirt-hyperconverged
+        namespace: openshift-cnv
+      register: _hco_status
+      until: >-
+        _hco_status.resources | length > 0
+        and (_hco_status.resources[0].status.conditions
+             | default([])
+             | selectattr('type', 'eq', 'Available')
+             | selectattr('status', 'eq', 'True')
+             | list | length > 0)
+      retries: 60
+      delay: 10
+
+    - name: Delete stale golden-image DataImportCrons
+      kubernetes.core.k8s:
+        kubeconfig: "{{ _kubeconfig }}"
+        api_version: cdi.kubevirt.io/v1beta1
+        kind: DataImportCron
+        namespace: openshift-virtualization-os-images
+        state: absent
+        label_selectors:
+          - "cdi.kubevirt.io/dataImportCron"
+      ignore_errors: true
+
+    - name: Delete golden-image PVCs
+      kubernetes.core.k8s:
+        kubeconfig: "{{ _kubeconfig }}"
+        api_version: v1
+        kind: PersistentVolumeClaim
+        namespace: openshift-virtualization-os-images
+        state: absent
+        label_selectors:
+          - "cdi.kubevirt.io/dataImportCron"
+      ignore_errors: true

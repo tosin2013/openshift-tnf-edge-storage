@@ -381,6 +381,17 @@ apply_linstor_passphrase() {
   echo "WARN: linstor-controller not ready; passphrase not applied."
 }
 
+disable_golden_images() {
+  local kubeconfig="$1"
+  echo "    Disabling CNV golden-image imports..."
+  KUBECONFIG="$kubeconfig" oc patch hyperconverged kubevirt-hyperconverged -n openshift-cnv \
+    --type merge -p '{"spec":{"workloadSources":{"enableCommonBootImageImport":false}}}' 2>/dev/null || true
+  KUBECONFIG="$kubeconfig" oc delete dataimportcron -n openshift-virtualization-os-images --all \
+    --wait=false 2>/dev/null || true
+  KUBECONFIG="$kubeconfig" oc delete pvc -n openshift-virtualization-os-images --all \
+    --wait=false 2>/dev/null || true
+}
+
 > "$MANIFEST"
 
 deploy_student_ipi() {
@@ -541,6 +552,7 @@ WLEOF
   echo "==> Workloads deployed on $guid."
   wait_field_content_apps "$student_kc"
   apply_linstor_passphrase "$student_kc"
+  disable_golden_images "$student_kc"
 }
 
 deploy_student() {
