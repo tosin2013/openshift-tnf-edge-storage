@@ -9,7 +9,7 @@ Resolve these before implementing Helm/Showroom YAML.
 | A1 | Which AgnosticD config or RHDP catalog item provisions **OCP 4.22+** TNA or Compact on AWS? | Locked provisioner for Track A | **RESOLVED** |
 | A2 | Does that config expose hooks for secondary EBS + `ocp4_workload_field_content`? | Field Content GitOps wiring | **RESOLVED** |
 | A3 | Minimum instance sizes enforced by AgnosticD for 4.22 TNA (primary vs arbiter)? | Cost and lab reliability | **RESOLVED** |
-| A4 | Is OpenShift Virtualization included or a separate workload? | Module 2 prerequisites | **RESOLVED** (gap identified) |
+| A4 | Is OpenShift Virtualization included or a separate workload? | Module 2 prerequisites | **RESOLVED** |
 
 ### A1 — RESOLVED (2026-07-27)
 
@@ -32,11 +32,13 @@ Instance types are consistent across code and docs:
 
 Note: Minor EBS volume size discrepancy between `defaults/main.yml` (200 GB root, 50 GB LINSTOR, 120 GB arbiter) and `linbit-student.yaml` (100 GB root, 50 GB arbiter). The Ansible role defaults are authoritative for the agent-based path.
 
-### A4 — RESOLVED (2026-07-27, gap identified)
+### A4 — RESOLVED (2026-08-19)
 
-OpenShift Virtualization IS included as a workload, but only in the **IPI path** (`ocp4_workload_openshift_virtualization` in `linbit-student.yaml`). The agent-based TNA path does NOT install it in any phase. However, the Helm chart's `sampleVm` component (`sampleVm.enabled: true`) expects it to exist.
+OpenShift Virtualization is installed in **both** paths:
+- **IPI path:** `ocp4_workload_openshift_virtualization` in `linbit-student.yaml`
+- **Agent-based TNA path:** Phase 7b of `ansible/roles/tna_student_cluster` installs the CNV operator and HyperConverged CR
 
-**Gap:** If using agent-based TNA, OpenShift Virtualization needs to be installed separately (e.g., a new Ansible phase or manual enablement).
+Additionally, `deploy-tna.sh` Phase 7b handles CNV installation as part of the standard TNA cluster provisioning. Validated on live `linbit-s1` cluster (student-readiness #9).
 
 ---
 
@@ -113,7 +115,7 @@ Supported by LINSTOR Operator v2.10.0+, but requires manual feature gate enablem
 |---|----------|----------------|--------|
 | F1 | ~~Helm-only Field Content CI vs custom AgnosticD role changes?~~ | | **RESOLVED** |
 | F2 | ~~One catalog item with track parameter vs two catalog items?~~ | | **RESOLVED** |
-| F3 | Showroom antora attributes from AgnosticD userinfo for both tracks? | Student login URLs | **PARTIALLY RESOLVED** |
+| F3 | Showroom antora attributes from AgnosticD userinfo for both tracks? | Student login URLs | **RESOLVED** |
 
 ### F1 — RESOLVED (previously)
 
@@ -123,11 +125,15 @@ Helm-only from field-sourced-content-template. Chart deploys LINSTOR Operator, S
 
 Single RHDP catalog item "LINBIT Edge Storage Workshop" with AWS TNA/Compact as default. KVM/TNF is an optional advanced path using the same Helm chart with `values-tnf.yaml` overlay. See module-outline.md.
 
-### F3 — PARTIALLY RESOLVED (2026-07-27)
+### F3 — RESOLVED (2026-08-20)
 
-Showroom is deployed on the hub cluster via `ocp4_workload_showroom`. The `deployment_info.txt` from Phase 8 captures the raw values: `api_url`, `console_url`, `kubeconfig`, instance IDs, etc. The Helm `values.yaml` has a `deployer` section with empty `domain` and `apiUrl` fields and a `userinfo` component.
+Showroom is deployed on the hub cluster via `ocp4_workload_showroom` (AgnosticD) and per-student instances via `deploy.sh` Phase 5. The Showroom content container (`ghcr.io/rhpds/showroom-content:prod`) clones this repo, runs Antora, and substitutes `%key%` placeholders using values from the `showroom-userdata` ConfigMap in each student's namespace.
 
-**Gap:** The pipeline to inject these values as Antora attributes is not yet implemented. The `site.yml` has no `asciidoc.attributes` section. The ConfigMap keys (`cluster_domain`, `api_url`, `admin_password`, `showroom_url`, `sample_db_connection`) are not defined anywhere. This needs implementation when Showroom content is authored.
+**Implementation:**
+- `deploy.sh` Phase 5 creates a `showroom-userdata` ConfigMap per student with keys: `guid`, `openshift_api_url`, `openshift_cluster_admin_password`, `openshift_cluster_ingress_domain`, `openshift_console_url`, `bastion_ssh_user_name`, `linstor_encryption_passphrase`
+- The Showroom content container reads these at build time and injects them into the Antora site
+- The terminal container has `KUBECONFIG=/home/lab-user/.kube/config` pointing at the student cluster
+- Validated end-to-end in student-readiness #9: all 5 modules render with correct substituted values
 
 ---
 

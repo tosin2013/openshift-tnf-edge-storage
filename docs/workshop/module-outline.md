@@ -21,11 +21,10 @@ flowchart TB
       SC[components/storageclasses/]
       SampleDB[components/sample-database/]
       SampleVM[components/sample-vm/]
-      MinIOComp[components/minio/]
-      ShowroomDeploy[components/showroom/]
+      Userinfo[components/userinfo/]
     end
   end
-  subgraph showroom [Showroom Lab Modules]
+  subgraph showroom [Showroom Lab Modules — deployed on Hub via AgnosticD]
     M1[Module 1: Storage Foundations]
     M2[Module 2: Database Performance]
     M3[Module 3: VM Live Migration]
@@ -35,14 +34,15 @@ flowchart TB
   AgnosticD --> ArgoCD
   AgentInstall -.->|optional| ArgoCD
   ArgoCD --> helm
-  ShowroomDeploy --> showroom
+  AgnosticD -->|"ocp4_workload_showroom (hub)"| showroom
 ```
 
 | Layer | Responsibility | Where |
 |-------|---------------|-------|
 | Cluster provisioning | AWS EC2 + OCP 4.22+ install, EBS volumes, networking | AgnosticD (default) or agent-install (advanced) |
-| Lab infrastructure | LINSTOR Operator, StorageClasses, sample workloads, Showroom | This Helm chart via ArgoCD |
-| Student experience | Guided hands-on exercises | Showroom AsciiDoc pages |
+| Lab infrastructure | LINSTOR Operator, StorageClasses, sample workloads, userinfo | This Helm chart via ArgoCD (student cluster) |
+| Showroom | Lab UI with embedded terminal targeting student cluster | Hub cluster via AgnosticD `ocp4_workload_showroom` + `deploy.sh` Phase 5 |
+| Student experience | Guided hands-on exercises | Showroom AsciiDoc pages (Antora site from this repo) |
 
 **Default path:** RHDP catalog orders AgnosticD AWS (TNA or Compact). AgnosticD calls `ocp4_workload_field_content` with `ocp4_workload_field_content_gitops_repo_url` pointing at this repo. ArgoCD deploys the chart. Student opens Showroom and starts Module 1.
 
@@ -58,8 +58,8 @@ One chart with toggleable components. Two values overlays: `values.yaml` (AWS de
 | storageclasses | `components/storageclasses/` | RWO locality class (`WaitForFirstConsumer`), Virt block-RWX class (`allow-two-primaries`) | enabled | enabled |
 | sample-database | `components/sample-database/` | PostgreSQL StatefulSet on LINSTOR RWO class for Module 2 benchmarks | enabled | enabled |
 | sample-vm | `components/sample-vm/` | VM disk PVC (block mode) for Module 3 live migration | enabled | enabled |
-| minio | `components/minio/` | S3-compatible endpoint for DR snapshots when AWS S3 is unavailable | disabled | enabled |
-| showroom | `components/showroom/` | Showroom Deployment + AsciiDoc lab content | enabled | enabled |
+| userinfo | `components/userinfo/` | RHDP Pipeline B data passback ConfigMap (Showroom URL, API URL, DB connection) | enabled | enabled |
+| minio | `components/minio/` | S3-compatible endpoint for DR snapshots when AWS S3 is unavailable | disabled | enabled (planned, see #15) |
 
 ### RHDP integration labels
 
@@ -69,14 +69,18 @@ metadata:
   labels:
     demo.redhat.com/application: "linbit-edge-storage"
 
-# On a ConfigMap -- data passback to RHDP catalog
+# On a ConfigMap (components/userinfo/) -- data passback to RHDP catalog
 metadata:
   labels:
     demo.redhat.com/userinfo: ""
 data:
-  showroom_url: "https://showroom.apps.{{ .Values.cluster_domain }}"
-  sample_db_connection: "postgresql://demo:demo@sample-db.linbit-workshop.svc:5432/workshop"
+  title: "LINBIT Edge Storage Workshop"
   msg: "LINBIT Edge Storage Workshop ready"
+  openshift_cluster_ingress_domain: "apps.linbit-s1.sandbox1949.opentlc.com"
+  openshift_api_url: "https://api.linbit-s1.sandbox1949.opentlc.com:6443"
+  openshift_console_url: "https://console-openshift-console.apps...."
+  showroom_url: "https://showroom-showroom-student-1.apps.hub...."
+  sample_db_connection: "postgresql://workshopuser:workshop123@sample-db.linbit-workshop.svc:5432/workshop"
 ```
 
 AgnosticD Pipeline A provides core cluster data (API URL, ingress domain, admin credentials). Pipeline B (the ConfigMap above) provides workload-specific data that only exists after ArgoCD deploys the chart.
@@ -195,7 +199,7 @@ flowchart LR
 - **Health tracking:** ArgoCD Application labeled `demo.redhat.com/application: "linbit-edge-storage"`
 - **Data passback:** ConfigMap labeled `demo.redhat.com/userinfo: ""` carries Showroom URL, API URL, sample-db connection string to RHDP catalog for student display
 - **Student access:** Showroom terminal + OpenShift web console via RHDP-provided credentials
-- **Showroom attributes:** `cluster_domain`, `api_url`, `admin_password` injected into Antora from AgnosticD userinfo (Pipeline A)
+- **Showroom attributes:** `guid`, `openshift_api_url`, `openshift_cluster_admin_password`, `openshift_cluster_ingress_domain` injected into Antora from AgnosticD `showroom-userdata` ConfigMap (Pipeline A). Confirmed working via `deploy.sh` Phase 5 per student-readiness (#9).
 
 ## Learning outcomes (summary)
 
