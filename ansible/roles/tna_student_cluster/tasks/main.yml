@@ -100,6 +100,13 @@
       tags: [phase6]
   tags: [phase6]
 
+- name: "Phase 6b — Pre-create LINSTOR LVM thin pool on CP nodes"
+  ansible.builtin.include_tasks:
+    file: phase6b_lvm_prep.yml
+    apply:
+      tags: [phase6b, lvm]
+  tags: [phase6b, lvm]
+
 - name: "Phase 7 — LINSTOR operator and storage pools"
   ansible.builtin.include_tasks:
     file: phase7_linstor.yml

@@ -1,0 +1,61 @@
+---
+# Phase 6b: Pre-create LVM thin pool for LINSTOR on CP nodes
+#
+# On m5zn.metal (virt-enabled profile), NVMe device naming is inconsistent
+# between instances. The LINSTOR EBS volume may appear as /dev/nvme0n1 or
+# /dev/nvme1n1 depending on enumeration order. This task finds the correct
+# unpartitioned EBS device and creates the LVM VG + thin pool that LINSTOR
+# expects (linstor_lvm-thin/lvm-thin), so the SatelliteConfiguration
+# hostDevices path becomes a no-op when the pool already exists.
+
+- name: Identify CP node public IPs for SSH
+  amazon.aws.ec2_instance_info:
+    region: "{{ tna_aws_region }}"
+    filters:
+      "tag:guid": "{{ tna_guid }}"
+      "tag:role": "control-plane"
+      "instance-state-name": "running"
+  register: _cp_instances
+
+- name: Pre-create LVM thin pool on each CP node
+  ansible.builtin.shell: |
+    set -euo pipefail
+    # Skip if VG already exists
+    if vgs linstor_lvm-thin >/dev/null 2>&1; then
+      echo "ALREADY_EXISTS"
+      exit 0
+    fi
+    # Find the unpartitioned NVMe device (LINSTOR EBS, ~50-100G, no partitions)
+    TARGET=""
+    for dev in /dev/nvme*n1; do
+      # Skip if device has partitions
+      [[ -b "${dev}p1" || -b "${dev}1" ]] && continue
+      # Skip if it's too large (root disk is 200G)
+      SIZE_GB=$(lsblk -bno SIZE "$dev" 2>/dev/null | awk '{printf "%d", $1/1073741824}')
+      [[ "$SIZE_GB" -gt 150 ]] && continue
+      # Skip if already has LVM
+      pvs "$dev" >/dev/null 2>&1 && continue
+      TARGET="$dev"
+      break
+    done
+    if [[ -z "$TARGET" ]]; then
+      echo "NO_DEVICE_FOUND"
+      exit 1
+    fi
+    pvcreate "$TARGET"
+    vgcreate linstor_lvm-thin "$TARGET"
+    lvcreate -l 100%FREE --thin -n lvm-thin linstor_lvm-thin
+    echo "CREATED on $TARGET"
+  args:
+    executable: /bin/bash
+  delegate_to: "{{ item.public_ip_address }}"
+  remote_user: core
+  become: true
+  loop: "{{ _cp_instances.instances }}"
+  loop_control:
+    label: "{{ item.tags.Name | default(item.instance_id) }}"
+  register: _lvm_prep
+  changed_when: "'CREATED' in _lvm_prep.stdout"
+  failed_when:
+    - _lvm_prep.rc != 0
+    - "'ALREADY_EXISTS' not in _lvm_prep.stdout"

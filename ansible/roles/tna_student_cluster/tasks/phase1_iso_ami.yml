@@ -46,6 +46,7 @@
       "tag:ocp-version": "{{ tna_ocp_version }}"
       "tag:purpose": "linbit-agent-iso"
       "tag:boot-mode": "{{ tna_ami_boot_mode | trim }}"
+      "tag:cluster-name": "{{ tna_cluster_name }}"
   register: _cached_amis
 
 - name: Fallback -- look for untagged cached AMI (legacy uefi-preferred only)
@@ -55,6 +56,7 @@
     filters:
       "tag:ocp-version": "{{ tna_ocp_version }}"
       "tag:purpose": "linbit-agent-iso"
+      "tag:cluster-name": "{{ tna_cluster_name }}"
   register: _cached_amis_untagged
   when:
     - _cached_amis.images | length == 0
@@ -245,7 +247,8 @@
           ocp-version: "{{ tna_ocp_version }}"
           purpose: linbit-agent-iso
           boot-mode: "{{ tna_ami_boot_mode | trim }}"
-          Name: "linbit-agent-ocp{{ tna_ocp_version }}"
+          cluster-name: "{{ tna_cluster_name }}"
+          Name: "linbit-agent-ocp{{ tna_ocp_version }}-{{ tna_cluster_name }}"
       loop:
         - "{{ _new_ami_id }}"
         - "{{ _snapshot_id }}"

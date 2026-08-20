@@ -44,6 +44,23 @@ student_deploy_method() {
 start_tna_instances() {
   local guid="$1"
   echo "==> Starting TNA instances for $guid ..."
+
+  # Wait for any instances still transitioning (stopping→stopped)
+  local all_ids
+  all_ids="$(aws ec2 describe-instances --region "$AWS_REGION" \
+    --filters "Name=tag:guid,Values=${guid}" \
+    --query 'Reservations[].Instances[].InstanceId' --output text 2>/dev/null || true)"
+  if [[ -n "$all_ids" && "$all_ids" != "None" ]]; then
+    local stopping
+    stopping="$(aws ec2 describe-instances --region "$AWS_REGION" \
+      --filters "Name=tag:guid,Values=${guid}" "Name=instance-state-name,Values=stopping" \
+      --query 'Reservations[].Instances[].InstanceId' --output text 2>/dev/null || true)"
+    if [[ -n "$stopping" && "$stopping" != "None" ]]; then
+      echo "  Waiting for instances to finish stopping ..."
+      aws ec2 wait instance-stopped --region "$AWS_REGION" --instance-ids $stopping
+    fi
+  fi
+
   local instance_ids
   instance_ids="$(aws ec2 describe-instances --region "$AWS_REGION" \
     --filters "Name=tag:guid,Values=${guid}" "Name=instance-state-name,Values=stopped" \
@@ -52,8 +69,10 @@ start_tna_instances() {
     aws ec2 start-instances --region "$AWS_REGION" --instance-ids $instance_ids || \
       echo "WARNING: Failed to start instances for $guid"
     echo "  Started: $instance_ids"
-    echo "  Waiting 120s for nodes to rejoin cluster ..."
-    sleep 120
+    echo "  Waiting for instances to reach running state ..."
+    aws ec2 wait instance-running --region "$AWS_REGION" --instance-ids $instance_ids
+    echo "  Instances running. Waiting 60s for OpenShift nodes to rejoin ..."
+    sleep 60
   else
     echo "  No stopped instances found for $guid"
   fi

@@ -11,6 +11,11 @@ storagePool:
   providerType: "LVM_THIN"
   devicePaths:
     - /dev/nvme1n1
+  # NOTE: On m5zn.metal (virt-enabled profile), NVMe device naming can be
+  # inconsistent between nodes (nvme0n1 vs nvme1n1). The Ansible deploy role
+  # pre-creates the LVM thin pool before LINSTOR starts, so this path is only
+  # a fallback for the SatelliteConfiguration. If the pool already exists,
+  # LINSTOR detects it regardless of the hostDevices path.
 
 # LINBIT customer/trial registry credentials (drbd.io).
 # Prefer injecting via ocp4_workload_field_content_helm_values from AgnosticD secrets.
