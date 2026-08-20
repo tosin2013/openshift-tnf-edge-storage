@@ -1,0 +1,37 @@
+name: helm lint
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'helm/**'
+      - '.github/workflows/helm-lint.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'helm/**'
+      - '.github/workflows/helm-lint.yml'
+
+jobs:
+  lint-and-template:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        values:
+          - name: aws
+            files: values.yaml
+          - name: tnf
+            files: values.yaml -f values-tnf.yaml
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.3
+
+      - name: Helm lint (${{ matrix.values.name }})
+        run: helm lint helm/ -f helm/${{ matrix.values.files }}
+
+      - name: Helm template (${{ matrix.values.name }})
+        run: helm template field-content helm/ -f helm/${{ matrix.values.files }} > /dev/null
