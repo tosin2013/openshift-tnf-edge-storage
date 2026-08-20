@@ -918,6 +918,8 @@ spec:
                   fieldPath: metadata.namespace
             - name: GUID
               value: "${student_guid}"
+            - name: KUBECONFIG
+              value: /home/lab-user/.kube/config
           ports:
             - containerPort: 7681
           resources:
